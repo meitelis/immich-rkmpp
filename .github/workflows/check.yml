@@ -1,0 +1,34 @@
+name: Source and build checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  source:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Focused source regressions
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
+          node --check scripts/prepare-source.mjs
+          node --check scripts/verify-hardware.mjs
+          sh -n scripts/build.sh scripts/deploy.sh scripts/rollback.sh
+          python3 - <<'PY'
+          import pathlib,re
+          for name in ('build.sh','deploy.sh','rollback.sh'):
+              script = pathlib.Path('scripts', name)
+              for block in re.findall(r"<<'PY'\n(.*?)\nPY", script.read_text(), re.S):
+                  compile(block, str(script), 'exec')
+          PY
+      - name: Pinned server and browser build
+        run: sh scripts/build.sh --source-dir "$RUNNER_TEMP/immich-rkmpp-source"

@@ -1,0 +1,9 @@
+Immich RKMPP customization for Immich v3.3.5.
+
+The overlays are derived from Immich, Copyright the Immich contributors,
+licensed under the GNU Affero General Public License version 3.
+Upstream source: https://github.com/immich-app/immich
+Source commit: 8303cb117e197c700332b33b61b45314c9cc5bb4
+
+The existing RKMPP customization was reviewed and retained where appropriate.
+This project is independent of the official Immich project.

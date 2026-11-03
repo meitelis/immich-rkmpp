@@ -1,0 +1,13 @@
+{
+  "ffmpeg": {
+    "accel": "rkmpp",
+    "accelDecode": true,
+    "targetVideoCodec": "h264",
+    "acceptedVideoCodecs": ["h264"],
+    "realtime": {
+      "enabled": true,
+      "videoCodecs": ["hevc", "h264"],
+      "resolutions": [480, 720, 1080, 1440, 2160]
+    }
+  }
+}

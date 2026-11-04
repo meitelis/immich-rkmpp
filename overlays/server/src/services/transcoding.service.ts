@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import type { ArgOf } from 'src/repositories/event.repository.js';
-import type { VideoInterfaces } from 'src/types.js';
+import type { AudioStreamInfo, VideoInterfaces } from 'src/types.js';
 import {
   HLS_BACKPRESSURE_PAUSE_SEGMENTS,
   HLS_BACKPRESSURE_RESUME_SEGMENTS,
@@ -16,12 +16,13 @@ import {
 } from 'src/constants.js';
 import { StorageCore } from 'src/cores/storage.core.js';
 import { OnEvent, OnJob } from 'src/decorators.js';
-import { DatabaseLock, ImmichWorker, JobName, QueueName, TranscodeTarget } from 'src/enum.js';
+import { AacProfile, DatabaseLock, ImmichWorker, JobName, QueueName, TranscodeTarget } from 'src/enum.js';
 import { BaseService } from 'src/services/base.service.js';
 import { isVideoStreamSessionPkConstraint } from 'src/utils/database.js';
 import { BaseConfig } from 'src/utils/media.js';
 
 type Session = {
+  audioProbe: Promise<AudioStreamInfo | null> | null;
   assetId: string;
   expiresAt: Date;
   id: string;
@@ -69,6 +70,7 @@ export class TranscodingService extends BaseService {
       const expiresAt = new Date(Date.now() + HLS_LEASE_DURATION_MS);
       await this.videoStreamRepository.createSession({ id: sessionId, assetId, expiresAt });
       this.sessions.set(sessionId, {
+        audioProbe: null,
         assetId,
         expiresAt,
         id: sessionId,
@@ -219,6 +221,11 @@ export class TranscodingService extends BaseService {
       return;
     }
 
+    const audio = await this.getSessionAudio(session, asset.audioStream, asset.originalPath);
+    if (!this.isCurrentStart(session, generation)) {
+      return;
+    }
+
     const variantDir = StorageCore.getHlsVariantFolder({
       ownerId: session.ownerId,
       sessionId: session.id,
@@ -271,7 +278,7 @@ export class TranscodingService extends BaseService {
         totalDuration: asset.packets.totalDuration,
       },
       asset.videoStream,
-      asset.audioStream ?? undefined,
+      audio ?? undefined,
     );
     this.logger.log(
       `Starting HLS transcode for asset ${session.assetId} variant ${variantIndex} with command: ffmpeg ${args.join(' ')}`,
@@ -279,6 +286,28 @@ export class TranscodingService extends BaseService {
     const process = this.processRepository.spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
     this.attachProcessHandlers(process, session, variantIndex);
     return process;
+  }
+
+  private async getSessionAudio(session: Session, audio: AudioStreamInfo | null | undefined, originalPath: string) {
+    if (
+      !audio ||
+      audio.codecName !== 'aac' ||
+      audio.profile !== AacProfile.Lc ||
+      !(audio.bitrate > 0 && audio.bitrate <= 256_000)
+    ) {
+      return audio;
+    }
+
+    // The stored audio metadata predates channel/sample-rate fields. Probe only
+    // copy candidates, once per session, without changing the database schema.
+    session.audioProbe ??= Promise.resolve()
+      .then(() => this.sessions.get(session.id) === session ? this.mediaRepository.probe(originalPath) : undefined)
+      .then((info) => info?.audioStreams.find(({ index }) => index === audio.index) ?? null)
+      .catch((error: unknown) => {
+        this.logger.warn(`Could not verify HLS audio compatibility for asset ${session.assetId}: ${error}`);
+        return null;
+      });
+    return (await session.audioProbe) ?? audio;
   }
 
   private failSession(session: Session, error: string) {

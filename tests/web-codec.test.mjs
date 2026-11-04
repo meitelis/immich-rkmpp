@@ -12,6 +12,7 @@ const sourceRoot = process.env.IMMICH_SOURCE
 const sourcePath = (path) => resolve(sourceRoot, 'web/src/lib', path);
 const { MediaCapabilitiesManager } = await import(pathToFileURL(sourcePath('managers/media-capabilities-manager.svelte.ts')));
 const codecHelpers = await import(pathToFileURL(sourcePath('utils/video-codec.ts')));
+const directHelpers = await import(pathToFileURL(sourcePath('utils/direct-playback.ts')));
 const { isHevcDecodeFailure, isMediaDecodeFailure, playbackPosition } = codecHelpers;
 const supported = { supported: true, smooth: true, powerEfficient: true, keySystemAccess: null };
 
@@ -127,8 +128,11 @@ const componentScript = stripTypeScriptTypes(script, { mode: 'strip' });
 const utilsSource = await readFile(sourcePath('utils.ts'), 'utf8');
 const hlsUrlSource = stripTypeScriptTypes(utilsSource.match(/export const getAssetHlsUrl = [\s\S]*?\n};/)[0].replace('export ', ''));
 
-function harness({ native = false, paused = false, autoplay = true } = {}) {
+function harness({ native = false, paused = false, autoplay = true, original = false } = {}) {
   const effects = [];
+  const preEffects = [];
+  const registerEffect = (callback) => effects.push(callback);
+  registerEffect.pre = (callback) => preEffects.push(callback);
   const released = [];
   const warnings = [];
   const derived = (value) => value;
@@ -162,18 +166,25 @@ function harness({ native = false, paused = false, autoplay = true } = {}) {
       return this.handlers.get(event)?.(event, data);
     }
   }
+  class HTMLElement {
+    constructor(tagName) { this.tagName = tagName; }
+    matches() { return this.tagName === 'BUTTON'; }
+  }
   const context = {
+    URL,
     ...codecHelpers,
+    ...directHelpers,
+    monitorDirectPlayback: () => () => {},
     console: { warn: (...args) => warnings.push(args), error: (...args) => warnings.push(args) },
     queueMicrotask,
     fetch: async (url, options) => { released.push({ url, options }); },
-    $props: () => ({ asset: { id: 'asset-a', width: 1920, height: 1080 }, assetId: 'asset-a', loopVideo: false, cacheKey: null, playOriginalVideo: false }),
+    $props: () => ({ asset: { id: 'asset-a', width: 1920, height: 1080 }, assetId: 'asset-a', loopVideo: false, cacheKey: null, playOriginalVideo: original }),
     $state: (value) => value,
     $derived: derived,
-    $effect: (callback) => effects.push(callback),
+    $effect: registerEffect,
     onMount() {}, onDestroy() {}, untrack: (callback) => callback(),
     $autoPlayVideo: autoplay,
-    Hls, AbrController: class {},
+    Hls, HTMLElement, AbrController: class {},
     featureFlagsManager: { value: { realtimeTranscoding: true } },
     authManager: { params: { key: 'keep-auth' } },
     createUrl: (path, params) => {
@@ -182,21 +193,34 @@ function harness({ native = false, paused = false, autoplay = true } = {}) {
       return url.href;
     },
     getAssetHlsSessionUrl: (assetId, id) => `/api/assets/${assetId}/video/stream/${id}`,
+    location: { origin: 'https://cloud.test' },
+    getAssetMediaUrl: ({ id }) => `https://cloud.test/api/assets/${id}/original`,
+    getAssetPlaybackUrl: ({ id }) => `https://cloud.test/api/assets/${id}/video/playback`,
+    AssetMediaSize: { Original: 'original' },
     mediaCapabilitiesManager: new MediaCapabilitiesManager(),
   };
   vm.createContext(context);
   vm.runInContext(`${hlsUrlSource}\n${componentScript}\n globalThis.harness = {
     setVideo(video) { videoPlayer = video; },
-    flush() { assetFileUrl = getAssetHlsUrl(assetId, avcFallbackAssetId === assetId ? 'h264' : undefined); globalThis.flushMain(); },
+    flush() {
+      useHls = featureFlagsManager.value.realtimeTranscoding && (!playOriginalVideo || directFallbackAssetId === assetId);
+      assetFileUrl = useHls ? getAssetHlsUrl(assetId, avcFallbackAssetId === assetId ? 'h264' : undefined)
+        : playOriginalVideo ? getAssetMediaUrl({ id: assetId }) : getAssetPlaybackUrl({ id: assetId });
+      globalThis.flushMain();
+    },
     metadata(video) { handleLoadedMetadata(video); },
     play(video) { if (typeof handlePlay === 'function') handlePlay(video); },
     mediaError(video) { handleMediaError({ currentTarget: video }); },
     changeAsset(id) { assetId = id; },
-    state() { return { avcFallbackAssetId, pendingResume, rebuildCount, activeSession }; },
+    changeOriginal(value) { playOriginalVideo = value; },
+    controlKeydown(event) { handleControlKeydown(event); },
+    controlShortcuts(el, media) { return controlShortcuts(el, media); },
+    setupRequest(xhr, url) { hlsConfig.xhrSetup(xhr, url); },
+    state() { return { avcFallbackAssetId, directFallbackAssetId, pendingResume, rebuildCount, activeSession }; },
   };`, context);
   context.flushMain = effects[0];
   const video = {
-    tagName: 'HLS-VIDEO', currentTime: 45.25, paused, autoplay, api: undefined, sourceChanges: 0,
+    tagName: original ? 'VIDEO' : 'HLS-VIDEO', currentTime: 45.25, paused, autoplay, api: undefined, sourceChanges: 0,
     error: null, playCalls: 0, pauseCalls: 0,
     sourceAutoplay: [],
     set src(url) {
@@ -215,7 +239,7 @@ function harness({ native = false, paused = false, autoplay = true } = {}) {
   };
   const controls = context.harness;
   controls.setVideo(video);
-  return { controls, video, released, warnings, Hls };
+  return { controls, video, released, warnings, Hls, HTMLElement, preEffects };
 }
 
 async function flush(h) {
@@ -404,4 +428,151 @@ test('playing recovery resumes even when normal autoplay is disabled', async () 
   assert.equal(h.video.currentTime, 22);
   assert.equal(h.video.paused, false);
   assert.equal(h.video.autoplay, false);
+});
+
+for (const paused of [false, true]) {
+  test(`explicit original bypasses transcoding and a decode failure falls back with ${paused ? 'paused' : 'playing'} state`, async () => {
+    const h = harness({ original: true });
+    await flush(h);
+    assert.ok(h.video.source.endsWith('/original'));
+    h.video.paused = paused;
+    h.video.currentTime = 31.5;
+    h.video.error = { code: 3 };
+    h.controls.mediaError(h.video);
+    assert.equal(h.controls.state().directFallbackAssetId, 'asset-a');
+    h.video.tagName = 'HLS-VIDEO';
+    await flush(h);
+    assert.ok(h.video.source.includes('/video/stream'));
+    await h.video.api.emit(h.Hls.Events.MANIFEST_PARSED);
+    assert.equal(h.video.api.startedAt, 31.5);
+    h.controls.metadata(h.video);
+    await h.video.finishLoading();
+    assert.equal(h.video.currentTime, 31.5);
+    assert.equal(h.video.paused, paused);
+  });
+}
+
+test('changing between adaptive and explicit Original preserves position before replacing the element', async () => {
+  const h = harness();
+  await flush(h);
+  h.preEffects[0]();
+  h.video.paused = true;
+  h.video.currentTime = 18;
+  h.controls.changeOriginal(true);
+  h.preEffects[0]();
+  h.video.tagName = 'VIDEO';
+  await flush(h);
+  h.controls.metadata(h.video);
+  await h.video.finishLoading();
+  assert.ok(h.video.source.endsWith('/original'));
+  assert.equal(h.video.currentTime, 18);
+  assert.equal(h.video.paused, true);
+});
+
+test('Space on a media control activates it without also triggering the body playback shortcut', () => {
+  const h = harness();
+  const controller = new h.HTMLElement('MEDIA-CONTROLLER');
+  const listeners = new Map();
+  controller.addEventListener = (type, callback) => listeners.set(type, callback);
+  controller.removeEventListener = (type, callback) => {
+    assert.equal(listeners.get(type), callback);
+    listeners.delete(type);
+  };
+  const action = h.controls.controlShortcuts(controller);
+  assert.equal(typeof listeners.get('keydown'), 'function');
+  for (const tagName of ['MEDIA-SETTINGS-MENU-BUTTON', 'BUTTON', 'MEDIA-RENDITION-MENU']) {
+    let stopped = 0;
+    h.controls.controlKeydown({ key: ' ', currentTarget: controller,
+      composedPath: () => [new h.HTMLElement(tagName), controller], stopPropagation: () => stopped++ });
+    assert.equal(stopped, 1);
+  }
+  let stopped = 0;
+  h.controls.controlKeydown({ key: ' ', currentTarget: controller,
+    composedPath: () => [new h.HTMLElement('HLS-VIDEO'), controller], stopPropagation: () => stopped++ });
+  assert.equal(stopped, 0, 'Space on the video still reaches the playback shortcut');
+  action.destroy();
+  assert.equal(listeners.size, 0, 'component destruction removes the delegated listener');
+});
+
+test('replacing HLS with Original repairs an add-before-remove controller batch and routes Play to the new video', async () => {
+  const h = harness();
+  const hls = { currentTime: 14.5, paused: true, playCalls: 0, play() { this.paused = false; this.playCalls++; } };
+  const original = { ...hls };
+  let child = hls;
+  let storeMedia = hls;
+  const controller = Object.assign(new h.HTMLElement('MEDIA-CONTROLLER'), {
+    isConnected: true, addEventListener() {}, removeEventListener() {},
+    querySelector: () => child,
+    mediaSetCallback: (media) => { storeMedia = media; },
+    playButton: () => storeMedia?.play(),
+    clock: () => storeMedia?.currentTime ?? 0,
+  });
+  const action = h.controls.controlShortcuts(controller, hls);
+  await Promise.resolve();
+  child = original;
+  // The pinned media-container processes addition, then removal, and the old
+  // media's unset callback clears the store even though the new child exists.
+  queueMicrotask(() => {
+    controller.mediaSetCallback(original);
+    storeMedia = undefined;
+  });
+  action.update(original);
+  await Promise.resolve();
+  assert.equal(controller.clock(), 14.5);
+  controller.playButton();
+  assert.equal(original.paused, false);
+  assert.equal(original.playCalls, 1);
+  assert.equal(hls.playCalls, 0);
+  action.destroy();
+});
+
+test('controller rebinding ignores superseded, removed and destroyed media', async () => {
+  const h = harness();
+  const first = {};
+  const next = {};
+  let child = first;
+  const bindings = [];
+  const controller = Object.assign(new h.HTMLElement('MEDIA-CONTROLLER'), {
+    isConnected: true, addEventListener() {}, removeEventListener() {},
+    querySelector: () => child, mediaSetCallback: (media) => bindings.push(media),
+  });
+  const action = h.controls.controlShortcuts(controller, first);
+  child = next;
+  action.update(next);
+  await Promise.resolve();
+  assert.deepEqual(bindings, [next]);
+  child = undefined;
+  action.update(next);
+  await Promise.resolve();
+  assert.equal(bindings.length, 1);
+  child = first;
+  action.update(first);
+  action.destroy();
+  await Promise.resolve();
+  assert.equal(bindings.length, 1);
+});
+
+test('quality changes hint the real playhead once and init requests hint the exact pending fragment', async () => {
+  const h = harness();
+  await flush(h);
+  const api = h.video.api;
+  await api.emit(h.Hls.Events.MANIFEST_PARSED);
+  h.video.currentTime = 12.25;
+  api.nextLevel = 0;
+  const playlist = api.levels[0].url[0];
+  const calls = [];
+  const xhr = { open: (...args) => calls.push(['open', ...args]), setRequestHeader: (...args) => calls.push(args) };
+  h.controls.setupRequest(xhr, playlist);
+  assert.deepEqual(calls.at(-1), ['x-immich-hls-pos', '12.25']);
+  assert.equal(new URL(calls[0][2]).searchParams.get('key'), 'keep-auth');
+  calls.length = 0;
+  h.controls.setupRequest(xhr, playlist);
+  assert.equal(calls.length, 1, 'a later ABR playlist must not reuse the manual-switch hint');
+  const init = playlist.replace('playlist.m3u8', 'init.mp4');
+  api.inFlightFragments = { main: { frag: { sn: 6, initSegment: { url: init } } } };
+  h.controls.setupRequest(xhr, init);
+  assert.deepEqual(calls.at(-1), ['x-immich-hls-msn', '6']);
+  calls.length = 0;
+  h.controls.setupRequest(xhr, init.replace('/init.mp4', '/seg_7.m4s'));
+  assert.equal(calls.length, 1, 'media fragments and other requests need no init hint');
 });

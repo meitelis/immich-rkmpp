@@ -31,8 +31,9 @@ const context = vm.createContext({
   HLS_LEASE_DURATION_MS: 60_000,
   HLS_CLEANUP_INTERVAL_MS: 5_000,
   HLS_INACTIVITY_TIMEOUT_MS: 30_000,
+  AacProfile: { Lc: 2 },
   TranscodeTarget: { All: 'ALL' },
-  BaseConfig: { create: () => ({ getHlsCommand: () => [] }) },
+  BaseConfig: { create: () => ({ getHlsCommand: (_, __, audio) => [JSON.stringify(audio ?? null)] }) },
   setInterval: () => ({}),
   clearInterval() {},
 });
@@ -46,7 +47,7 @@ const metadata = {
   videoStream: { timeBase: 1 },
   originalPath: '/fixture/video.mp4',
 };
-const flush = async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
+const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 const deferred = () => Promise.withResolvers();
 
 async function setup({ deferConfig = false, onSpawn } = {}) {
@@ -54,6 +55,8 @@ async function setup({ deferConfig = false, onSpawn } = {}) {
   const metadataRequests = [];
   const configRequests = [];
   const processes = [];
+  const commands = [];
+  const audioRequests = [];
   const removedDirectories = [];
   sut.getConfig = () => {
     if (!deferConfig) return Promise.resolve({ ffmpeg: {} });
@@ -71,6 +74,13 @@ async function setup({ deferConfig = false, onSpawn } = {}) {
     },
   };
   sut.logger = { debug() {}, log() {}, warn() {}, error() {} };
+  sut.mediaRepository = {
+    probe: () => {
+      const request = deferred();
+      audioRequests.push(request);
+      return request.promise;
+    },
+  };
   sut.websocketRepository = { serverSend() {} };
   sut.storageRepository = {
     mkdirSync() {},
@@ -78,7 +88,8 @@ async function setup({ deferConfig = false, onSpawn } = {}) {
     unlinkDir: async (directory) => { removedDirectories.push(directory); },
   };
   sut.processRepository = {
-    spawn: () => {
+    spawn: (_, args) => {
+      commands.push(args);
       const process = Object.assign(new EventEmitter(), {
         stderr: new EventEmitter(),
         signals: [],
@@ -97,8 +108,73 @@ async function setup({ deferConfig = false, onSpawn } = {}) {
   const start = (variantIndex = 0, segmentIndex = 0) => sut.onSegmentRequest({
     sessionId: 'session', assetId: 'asset', variantIndex, segmentIndex,
   });
-  return { sut, start, metadataRequests, configRequests, processes, removedDirectories };
+  return { sut, start, metadataRequests, configRequests, processes, commands, audioRequests, removedDirectories };
 }
+
+const storedAudio = { index: 1, codecName: 'aac', profile: 2, bitrate: 128_000 };
+const probedAudio = { ...storedAudio, channels: 2, sampleRate: 48_000 };
+
+test('AAC compatibility analysis is shared by overlapping quality starts and selects the stored stream', async () => {
+  const h = await setup();
+  const first = h.start(0);
+  await flush();
+  h.metadataRequests[0].resolve({ ...metadata, audioStream: storedAudio });
+  await flush();
+  assert.equal(h.audioRequests.length, 1);
+  const second = h.start(1);
+  await flush();
+  h.metadataRequests[1].resolve({ ...metadata, audioStream: storedAudio });
+  await flush();
+  assert.equal(h.audioRequests.length, 1, 'Quality changes must share the pending audio probe');
+  h.audioRequests[0].resolve({ audioStreams: [{ ...probedAudio, index: 0, channels: 6 }, probedAudio] });
+  await Promise.all([first, second]);
+  assert.equal(h.processes.length, 1, 'A superseded start must not spawn after its probe resolves');
+  assert.deepEqual(JSON.parse(h.commands[0][0]), probedAudio);
+  const third = h.start(0, 2);
+  await flush();
+  h.metadataRequests[2].resolve({ ...metadata, audioStream: storedAudio });
+  await third;
+  assert.equal(h.audioRequests.length, 1, 'Later quality changes reuse verified audio metadata');
+});
+
+test('closing a viewer during AAC verification prevents an orphan encoder', async () => {
+  const h = await setup();
+  const pending = h.start();
+  await flush();
+  h.metadataRequests[0].resolve({ ...metadata, audioStream: storedAudio });
+  await flush();
+  await h.sut.onSessionEnd({ sessionId: 'session' });
+  h.audioRequests[0].resolve({ audioStreams: [probedAudio] });
+  await pending;
+  assert.equal(h.processes.length, 0);
+});
+
+test('failed or missing AAC verification preserves conservative encoding metadata', async () => {
+  for (const fail of [false, true]) {
+    const h = await setup();
+    const pending = h.start();
+    await flush();
+    h.metadataRequests[0].resolve({ ...metadata, audioStream: storedAudio });
+    await flush();
+    if (fail) h.audioRequests[0].reject(new Error('Synthetic probe failure'));
+    else h.audioRequests[0].resolve({ audioStreams: [] });
+    await pending;
+    assert.deepEqual(JSON.parse(h.commands[0][0]), storedAudio);
+  }
+});
+
+test('lossless, high-rate and non-LC sources skip copy-only compatibility probing', async () => {
+  for (const override of [{ codecName: 'flac' }, { bitrate: 384_000 }, { profile: 5 }, { bitrate: 0 }]) {
+    const h = await setup();
+    const pending = h.start();
+    await flush();
+    const audio = { ...storedAudio, ...override };
+    h.metadataRequests[0].resolve({ ...metadata, audioStream: audio });
+    await pending;
+    assert.equal(h.audioRequests.length, 0);
+    assert.deepEqual(JSON.parse(h.commands[0][0]), audio);
+  }
+});
 
 test('concurrent requests for the same cold rendition share one encoder start', async () => {
   const h = await setup();

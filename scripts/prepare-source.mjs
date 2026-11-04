@@ -35,4 +35,4 @@ await cp(path.join(root, 'Dockerfile.rkmpp'), path.join(target, 'Dockerfile.rkmp
 await cp(path.join(root, 'NOTICE'), path.join(target, 'RKMPP_NOTICE'));
 console.log('Prepared Immich ' + upstream.version + ' at ' + target);
 console.log('Build: docker build -f "' + path.join(target, 'Dockerfile.rkmpp') +
-  '" -t local/immich-server:rkmpp-' + upstream.version + '-r1 "' + target + '"');
+  '" -t local/immich-server:rkmpp-' + upstream.version + '-r3 "' + target + '"');

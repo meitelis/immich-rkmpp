@@ -2,7 +2,7 @@
 # volumes, networks, machine-learning image and configuration.
 services:
   immich-server:
-    image: local/immich-server:rkmpp-3.3.5-r1
+    image: local/immich-server:rkmpp-3.3.5-r3
     pull_policy: never
     devices:
       - /dev/dri:/dev/dri

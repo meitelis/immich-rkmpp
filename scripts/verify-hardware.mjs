@@ -7,23 +7,25 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 
-const usage = `Usage: node verify-hardware.mjs --scratch /tmp/immich-rkmpp-verify [--quick] [--hdr] [--fallback] [--rotation] [--label patched]
+const usage = `Usage: node verify-hardware.mjs --scratch /tmp/immich-rkmpp-verify [--quick] [--hdr] [--sdr10] [--small] [--audio] [--fallback] [--rotation] [--label patched]
 
 Run inside an Immich v3.3.5 test container with the Rockchip devices exposed.
 Creates synthetic media only, serially tests all five HLS resolutions in HEVC
 and H264, then tests middle seeks at 1080p and 2160p. Every fMP4 fragment must
 start with a keyframe and pass independent strict software decoding.
---quick uses six seconds of SDR instead of twelve. Optional HDR tests use a
-six-second 720p 10-bit fixture and require libx265 for fixture creation.
+--quick uses six seconds of SDR instead of twelve. Optional HDR/SDR10 tests use
+six-second 720p 10-bit fixtures and require libx265. --small verifies a source
+below the minimum rendition size without upscaling it.
+--audio adds mono 44.1 kHz AAC copy/cold seeks and lossless PCM/FLAC conversion.
 All generated files and report.json stay in a new directory under --scratch.
 No application configuration, database, or existing media is read or changed.`;
 
 function options(argv) {
-  const out = { quick: false, hdr: false, fallback: false, rotation: false, label: 'unlabelled', appDist: '/usr/src/app/server/dist' };
+  const out = { quick: false, hdr: false, sdr10: false, small: false, audio: false, fallback: false, rotation: false, label: 'unlabelled', appDist: '/usr/src/app/server/dist' };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--help') { console.log(usage); process.exit(0); }
-    if (['--quick', '--hdr', '--fallback', '--rotation'].includes(arg)) { out[arg.slice(2)] = true; continue; }
+    if (['--quick', '--hdr', '--sdr10', '--small', '--audio', '--fallback', '--rotation'].includes(arg)) { out[arg.slice(2)] = true; continue; }
     if (['--scratch', '--label', '--app-dist'].includes(arg) && argv[i + 1]) {
       const name = arg === '--app-dist' ? 'appDist' : arg.slice(2);
       out[name] = argv[++i];
@@ -72,7 +74,7 @@ function run(bin, args, { timeoutMs = 180_000, onStart } = {}) {
 
 const ffmpeg = (args, extra) => run('ffmpeg', ['-hide_banner', '-loglevel', 'warning', ...args], extra);
 const ffprobe = async (filename, packets = false) => JSON.parse((await run('ffprobe', [
-  '-v', 'error', '-show_streams', '-show_format', ...(packets ? ['-show_packets'] : []), '-of', 'json', filename,
+  '-v', 'error', '-show_streams', '-show_format', ...(packets ? ['-show_packets', '-show_data_hash', 'sha256'] : []), '-of', 'json', filename,
 ])).stdout);
 const rational = (value) => { const [a, b = '1'] = String(value).split('/'); return Number(a) / Number(b); };
 const rotation = (stream) => Number(stream.side_data_list?.find((item) => item.rotation !== undefined)?.rotation ?? stream.tags?.rotate ?? 0);
@@ -100,8 +102,12 @@ function videoMetadata(info) {
     dvProfile: null, dvLevel: null, dvBlSignalCompatibilityId: null,
   };
   const audioSource = info.streams.find((item) => item.codec_type === 'audio');
-  const audio = audioSource ? { index: audioSource.index, codecName: audioSource.codec_name } : undefined;
-  return { video, audio, packets: { packetCount, totalDuration }, fps: packetCount * timeDenominator / totalDuration };
+  const audio = audioSource ? {
+    index: audioSource.index, codecName: audioSource.codec_name, profile: audioSource.profile === 'LC' ? 2 : null,
+    bitrate: Number(audioSource.bit_rate ?? 0), channels: audioSource.channels, sampleRate: Number(audioSource.sample_rate),
+  } : undefined;
+  const audioPackets = audio ? info.packets.filter((item) => item.stream_index === audio.index) : [];
+  return { video, audio, audioPackets, packets: { packetCount, totalDuration }, fps: packetCount * timeDenominator / totalDuration };
 }
 
 try {
@@ -158,6 +164,11 @@ try {
       }, metadata.video, metadata.audio);
       entry.encoder = args[args.indexOf('-c:v') + 1];
       assert.equal(entry.encoder, `${codec}_rkmpp`, 'Video must use the requested hardware encoder');
+      entry.audioEncoder = metadata.audio ? args[args.indexOf('-c:a') + 1] : null;
+      const copyAudio = metadata.audio?.codecName === 'aac' && metadata.audio.profile === 2 &&
+        [1, 2].includes(metadata.audio.channels) && [32_000, 44_100, 48_000].includes(metadata.audio.sampleRate) &&
+        metadata.audio.bitrate > 0 && metadata.audio.bitrate <= 256_000;
+      if (metadata.audio) assert.equal(entry.audioEncoder, copyAudio ? 'copy' : 'aac', 'Unexpected HLS audio policy');
       entry.filter = args.includes('-vf') ? args[args.indexOf('-vf') + 1] : null;
       entry.seekSeconds = seekSeconds;
       entry.gop = gop;
@@ -183,6 +194,7 @@ try {
       entry.expectedDisplay = expected;
       entry.fragments = [];
       let totalFrames = 0;
+      let lastAudioEnd;
       for (const filename of filenames) {
         const segmentIndex = Number(filename.match(/\d+/)[0]);
         const joined = path.join(directory, 'independent-fragment.mp4');
@@ -208,13 +220,41 @@ try {
           `Fragment timestamp ${firstPts} differs from the shared rendition clock`);
         if (filename !== filenames.at(-1)) assert.equal(packets.length, gop, 'A full segment must contain exactly one GOP');
         const audio = info.streams.find((item) => item.codec_type === 'audio');
-        if (metadata.audio) { assert.equal(audio?.codec_name, 'aac'); assert.equal(audio?.channels, 2); }
+        let audioFirstPts, audioEndPts;
+        if (metadata.audio) {
+          assert.equal(audio?.codec_name, 'aac');
+          assert.equal(audio?.channels, copyAudio ? metadata.audio.channels : 2);
+          const audioPackets = info.packets.filter((item) => item.stream_index === audio.index);
+          assert.ok(audioPackets.length > 0, 'Fragment must contain audio packets');
+          audioFirstPts = Number(audioPackets[0].pts_time);
+          const last = audioPackets.at(-1);
+          audioEndPts = Number(last.pts_time) + Number(last.duration_time);
+          const sampleRate = Number(audio.sample_rate);
+          assert.ok(Math.abs(audioFirstPts - firstPts) <= 1024 / sampleRate + 1 / sampleRate,
+            `Audio begins at ${audioFirstPts}, outside the video fragment boundary ${firstPts}`);
+          if (lastAudioEnd !== undefined) assert.ok(Math.abs(audioFirstPts - lastAudioEnd) <= 2 / sampleRate,
+            'Adjacent HLS fragments must have a continuous audio clock');
+          if (copyAudio) {
+            const sourceBySample = new Map(metadata.audioPackets.map((packet) =>
+              [Math.round(Number(packet.pts_time) * metadata.audio.sampleRate), packet]));
+            for (const packet of audioPackets) {
+              const original = sourceBySample.get(Math.round(Number(packet.pts_time) * sampleRate));
+              assert.ok(original, 'Copied audio packet must retain its source timestamp');
+              assert.ok(packet.data_hash && packet.data_hash === original.data_hash,
+                'Copied audio packet payload must be identical to its source');
+            }
+          }
+          await ffmpeg(['-xerror', '-err_detect', 'explode', '-threads', '2', '-i', joined,
+            '-map', '0:a:0', '-vn', '-f', 'null', '-']);
+          lastAudioEnd = audioEndPts;
+        }
         const decoded = await ffmpeg(['-xerror', '-err_detect', 'explode', '-threads', '2', '-i', joined,
           '-map', '0:v:0', '-an', '-fps_mode', 'passthrough', '-progress', 'pipe:1', '-f', 'null', '-']);
         const decodedFrames = Number([...decoded.stdout.matchAll(/^frame=(\d+)/gm)].at(-1)?.[1] ?? 0);
         assert.equal(decodedFrames, packets.length, 'Independent strict decode must recover every video frame');
         entry.fragments.push({ index: segmentIndex, frames: packets.length, firstPts, width: stream.width, height: stream.height,
-          rotation: rotation(stream), codec: stream.codec_name, level: stream.level, independentStrictDecode: true });
+          rotation: rotation(stream), codec: stream.codec_name, level: stream.level, independentStrictDecode: true,
+          ...(metadata.audio ? { audioFirstPts, audioEndPts, audioStrictDecode: true, audioSourcePacketsPreserved: copyAudio } : {}) });
         totalFrames += packets.length;
       }
       assert.ok(Math.abs(totalFrames - expectedFrames) <= 1, `Output contains ${totalFrames} frames; expected ${expectedFrames}`);
@@ -247,6 +287,41 @@ try {
     const metadata = videoMetadata(await ffprobe(rotated, true));
     assert.equal(Math.abs(metadata.video.rotation), 90, 'Rotated synthetic fixture must contain a display matrix');
     for (const codec of ['hevc', 'h264']) await verifyCase({ name: `rotation-1080-${codec}`, input: rotated, metadata, resolution: 1080, codec });
+  }
+  if (opts.audio) {
+    for (const [name, audioArgs, suffix] of [
+      ['aac-mono-44100', ['-c:a', 'aac', '-ac', '1', '-ar', '44100', '-b:a', '96k'], 'mp4'],
+      ['pcm-stereo', ['-c:a', 'pcm_s16le', '-ac', '2', '-ar', '48000'], 'mov'],
+      ['flac-stereo', ['-c:a', 'flac', '-ac', '2', '-ar', '48000', '-strict', '-2'], 'mp4'],
+    ]) {
+      const input = path.join(scratch, `synthetic-${name}.${suffix}`);
+      await ffmpeg(['-nostdin', '-i', fixture, '-map', '0:v:0', '-map', '0:a:0', '-t', '6',
+        '-c:v', 'copy', ...audioArgs, input]);
+      const metadata = videoMetadata(await ffprobe(input, true));
+      for (const codec of ['hevc', 'h264']) {
+        await verifyCase({ name: `audio-${name}-${codec}`, input, metadata, resolution: 720, codec });
+        if (name.startsWith('aac')) await verifyCase({ name: `audio-seek-${name}-${codec}`,
+          input, metadata, resolution: 720, codec, startSegment: 1 });
+      }
+    }
+  }
+  if (opts.sdr10) {
+    const sdr = path.join(scratch, 'synthetic-sdr10-720.mp4');
+    await ffmpeg(['-nostdin', '-filter_threads', '1', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=30',
+      '-t', '6', '-vf', 'format=yuv420p10le', '-c:v', 'libx265', '-preset', 'ultrafast',
+      '-x265-params', 'pools=2:frame-threads=2:log-level=error', '-g', '60', '-bf', '0',
+      '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', '-an', sdr]);
+    const metadata = videoMetadata(await ffprobe(sdr, true));
+    for (const codec of ['hevc', 'h264']) await verifyCase({ name: `sdr10-fullsize-${codec}`,
+      input: sdr, metadata, resolution: 720, codec });
+  }
+  if (opts.small) {
+    const small = path.join(scratch, 'synthetic-small.mp4');
+    await ffmpeg(['-nostdin', '-filter_threads', '1', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30',
+      '-t', '6', '-vf', 'format=nv12', '-c:v', 'h264_rkmpp', '-g', '60', '-bf', '0', '-an', small]);
+    const metadata = videoMetadata(await ffprobe(small, true));
+    for (const codec of ['hevc', 'h264']) await verifyCase({ name: `small-fullsize-${codec}`,
+      input: small, metadata, resolution: 480, codec, belowLimit: true });
   }
   if (opts.hdr) {
     const hdr = path.join(scratch, 'synthetic-hdr-pq-720.mp4');

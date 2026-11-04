@@ -32,7 +32,7 @@ COPY web/package.json web/package.json
 RUN pnpm --filter immich-web install --frozen-lockfile
 COPY i18n i18n/
 COPY web web/
-ARG IMMICH_BUILD=rkmpp-3.3.5-r1
+ARG IMMICH_BUILD=rkmpp-3.3.5-r3
 ENV IMMICH_BUILD=${IMMICH_BUILD}
 RUN pnpm --filter immich-web exec svelte-kit sync && \
     pnpm --filter immich-web check:svelte && \
@@ -46,10 +46,10 @@ COPY --from=web /usr/src/app/web/build /build/www
 COPY LICENSE /licenses/immich-rkmpp/LICENSE
 COPY RKMPP_NOTICE /licenses/immich-rkmpp/NOTICE
 ARG RKMPP_REVISION=local
-ARG IMMICH_BUILD=rkmpp-3.3.5-r1
+ARG IMMICH_BUILD=rkmpp-3.3.5-r3
 ENV IMMICH_BUILD=${IMMICH_BUILD}
 LABEL org.opencontainers.image.title="Immich RKMPP" \
-      org.opencontainers.image.version="3.3.5-rkmpp-r1" \
+      org.opencontainers.image.version="3.3.5-rkmpp-r3" \
       org.opencontainers.image.source="https://github.com/meitelis/immich-rkmpp" \
       org.opencontainers.image.revision="${RKMPP_REVISION}" \
       cc.immich-rkmpp.upstream-version="3.3.5" \

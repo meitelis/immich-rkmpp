@@ -12,13 +12,14 @@ import type {
 import {
   AUDIO_ENCODER,
   AV1_LEVELS,
-  CodecLevel,
+  type CodecLevel,
   H264_LEVELS,
   HEVC_LEVELS,
   SUPPORTED_HWA_CODECS,
 } from 'src/constants.js';
 import { ConfigFFmpegDto } from 'src/dtos/config.dto.js';
 import {
+  AacProfile,
   CQMode,
   ColorMatrix,
   ColorPrimaries,
@@ -169,6 +170,19 @@ export class BaseConfig implements VideoCodecSWConfig {
   }
 
   getHlsCommand(options: HlsCommandOptions, video: VideoStreamInfo, audio?: AudioStreamInfo) {
+    // Keep compatible source packets and their clock across rendition restarts.
+    // Unknown profiles/layouts and high-rate audio retain normal AAC encoding.
+    // Apply this only to HLS; explicit offline conversion keeps its usual policy.
+    const target =
+      options.target === TranscodeTarget.All &&
+      audio?.codecName === 'aac' &&
+      audio.profile === AacProfile.Lc &&
+      (audio.channels === 1 || audio.channels === 2) &&
+      [32_000, 44_100, 48_000].includes(audio.sampleRate ?? 0) &&
+      audio.bitrate > 0 &&
+      audio.bitrate <= 256_000
+        ? TranscodeTarget.Video
+        : options.target;
     const args: string[] = this.getBaseInputOptions(video);
     if (options.seekSeconds) {
       args.push('-ss', String(options.seekSeconds));
@@ -178,7 +192,7 @@ export class BaseConfig implements VideoCodecSWConfig {
       '-nostats',
       '-i',
       options.inputPath,
-      ...this.getBaseOutputOptions(options.target, video, audio),
+      ...this.getBaseOutputOptions(target, video, audio),
       ...this.getPresetOptions(),
       ...this.getBitrateOptions(),
       ...this.getEncoderOptions(),
@@ -206,6 +220,15 @@ export class BaseConfig implements VideoCodecSWConfig {
       '-start_number',
       String(options.startSegment),
     );
+
+    if (target !== options.target && options.startSegment > 0) {
+      // Input accurate_seek only trims decoded streams. Copied AAC would retain
+      // keyframe preroll, replaying old audio after a cold quality change. Drop
+      // only packets before the exact shared GOP boundary; keep payloads/PTS.
+      const fps = (options.packetCount * options.timeBase) / options.totalDuration;
+      const boundary = (options.startSegment * Math.ceil(options.segmentDuration * fps)) / fps;
+      args.push('-bsf:a', `noise=amount=0:drop=lt(pts*tb\\,${boundary})`);
+    }
 
     if ([TranscodeTarget.All, TranscodeTarget.Video].includes(options.target)) {
       const filters = this.getFilterOptions(video);

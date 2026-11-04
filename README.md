@@ -2,7 +2,7 @@
 
 A pinned, rebuildable RK3588 customization for **Immich 3.3.5**, with hardware HEVC/H.265 and H.264 real-time playback. The custom server and browser are built into one Immich runtime image. No compiled JavaScript bind mount is needed.
 
-Immich 3.3.5 already includes RKMPP and real-time HLS. This project preserves that engine and its buffering, prewarming and idle management. The overlays add focused fixes for encoder startup races, rendition sizing and HDR surface conversion, plus browser capability checks and a one-time H.264 retry when HEVC decoding fails.
+Immich 3.3.5 already includes RKMPP and real-time HLS. This project preserves that engine and its buffering, prewarming and idle management. The overlays fix encoder startup races, rendition sizing and HDR surface conversion, add browser capability checks and a one-time H.264 retry, preserve verified compatible AAC, and support explicit Original playback with adaptive fallback.
 
 The exact upstream source commit and official runtime digest are in [upstream.json](upstream.json). Source preparation verifies both pins. This package supports that version only; applying its files to another Immich version is unsupported. It is independent of the official Immich project and licensed under AGPL-3.0.
 
@@ -16,12 +16,12 @@ cd immich-rkmpp
 sh scripts/build.sh
 ```
 
-The build creates `local/immich-server:rkmpp-3.3.5-r1`. It fetches a fresh pinned upstream checkout under `work/`, applies the overlays, checks the server and browser, and compiles both. The runtime reuses the matching official image's dependencies, FFmpeg, CLI and core plugins. It does not rebuild unrelated Immich CLI or plugin binaries. A container used for source preparation is removed when it finishes; it adds no ongoing runtime service.
+The build creates `local/immich-server:rkmpp-3.3.5-r3`. It fetches a fresh pinned upstream checkout under `work/`, applies the overlays, checks the server and browser, and compiles both. The runtime reuses the matching official image's dependencies, FFmpeg, CLI and core plugins. It does not rebuild unrelated Immich CLI or plugin binaries. A container used for source preparation is removed when it finishes; it adds no ongoing runtime service.
 
 For another tag or source destination:
 
 ```sh
-sh scripts/build.sh --image local/immich-server:rkmpp-3.3.5-r1 \
+sh scripts/build.sh --image local/immich-server:rkmpp-3.3.5-r3 \
   --source-dir /path/to/new/immich-source
 ```
 
@@ -34,7 +34,7 @@ Start from the existing, working Immich 3.3.5 Compose stack. Keep its database, 
 Deployment and rollback require Docker Compose and Python 3 only; Node.js, npm and pnpm are not required on the Radxa.
 
 1. Save a copy of the Compose file **before editing it**, such as `docker-compose.yml.before-rkmpp`.
-2. Change only the `immich-server` image to `local/immich-server:rkmpp-3.3.5-r1` and set `pull_policy: never` for a locally built image.
+2. Change only the `immich-server` image to `local/immich-server:rkmpp-3.3.5-r3` and set `pull_policy: never` for a locally built image.
 3. Remove any old bind mount that replaces `/usr/src/app/server/dist/utils/media.js`, another compiled server file, or `/build/www`. Such a mount would hide the code built into this image. The deployment script refuses these mounts.
 4. Retain the RK3588 devices and matching Mali/OpenCL host setup. [compose.override.example.yml](compose.override.example.yml) shows the relevant device and library mappings, but is not a replacement for a complete Immich stack. Compose merges volume entries, so adding this example alone does not remove an old JavaScript mount.
 5. Deploy the server using the **existing Compose project name**:
@@ -84,7 +84,7 @@ npm test
 
 The image build also checks server TypeScript, the upstream HLS/transcoding/streaming-DTO suites, Svelte, browser TypeScript and both production builds. [scripts/verify-hardware.mjs](scripts/verify-hardware.mjs) tests generated synthetic HLS fragments on actual Rockchip hardware. Run it in a disposable container with the same devices and libraries and an isolated scratch mount; it does not need your photo library or database.
 
-See the repository's verification report for the completed hardware and browser results and their limits. Source tests alone do not establish playback performance on every client.
+See [verification](VERIFICATION.md) for completed checks and their limits, and [implementation status](docs/IMPLEMENTATION_STATUS.md) for the boundary between current changes and the broader design proposal. Source tests alone do not establish playback performance on every client.
 
 ## Updating Immich
 

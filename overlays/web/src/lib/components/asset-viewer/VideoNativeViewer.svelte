@@ -9,6 +9,7 @@
   import { mediaCapabilitiesManager } from '$lib/managers/media-capabilities-manager.svelte';
   import { autoPlayVideo, lang, loopVideo as loopVideoPreference } from '$lib/stores/preferences.store';
   import { getAssetHlsSessionUrl, getAssetHlsUrl, getAssetMediaUrl, getAssetPlaybackUrl } from '$lib/utils';
+  import { monitorDirectPlayback } from '$lib/utils/direct-playback';
   import {
     isHevcCodec,
     isHevcDecodeFailure,
@@ -85,9 +86,14 @@
   let isLoading = $state(true);
   let hasLoadedMetadata = $state(false);
   let avcFallbackAssetId: string | undefined = $state();
+  let directFallbackAssetId: string | undefined = $state();
   let pausedReloadAssetId: string | undefined = $state();
+  // Honour the existing Play original choice. Automatic playback keeps the
+  // adaptive ladder: the asset DTO does not expose original codec/HDR metadata.
+  let useHls = $derived(featureFlagsManager.value.realtimeTranscoding &&
+    (!playOriginalVideo || directFallbackAssetId === assetId));
   let assetFileUrl = $derived.by(() => {
-    if (featureFlagsManager.value.realtimeTranscoding) {
+    if (useHls) {
       return getAssetHlsUrl(assetId, avcFallbackAssetId === assetId ? 'h264' : undefined);
     }
 
@@ -147,6 +153,7 @@
     }
   }
 
+  let hlsPositionHint: { api: Hls; position: number } | undefined;
   const hlsConfig: Partial<HlsConfig> = {
     abrController: NoAbandonAbrController,
     highBufferWatchdogPeriod: 10,
@@ -171,10 +178,25 @@
         }
       }
       xhr.open('GET', authenticatedUrl.href);
+      const api = isHlsElement(videoPlayer) ? videoPlayer.api : undefined;
+      const frag = api?.inFlightFragments?.main.frag;
+      // During init loading hls.js exposes the associated media fragment. Its
+      // sequence number is exact; a server guess can be far ahead after a seek
+      // or an immediate quality switch with a full playback buffer.
+      if (typeof frag?.sn === 'number' && frag.initSegment?.url === url) {
+        xhr.setRequestHeader('x-immich-hls-msn', String(frag.sn));
+      }
+      const hint = hlsPositionHint;
+      if (hint && hint.api === api && authenticatedUrl.pathname.endsWith('/playlist.m3u8') &&
+        authenticatedUrl.pathname.match(SESSION_ID_REGEX)?.[1] === activeSession?.id) {
+        xhr.setRequestHeader('x-immich-hls-pos', String(hint.position));
+        hlsPositionHint = undefined;
+      }
     },
   };
 
   const releaseSession = () => {
+    hlsPositionHint = undefined;
     const session = activeSession;
     if (!session) {
       return;
@@ -235,14 +257,25 @@
   };
 
   const handleMediaError = (event: Event) => {
-    const el = event.currentTarget as HlsVideoElement;
+    const el = event.currentTarget as HTMLVideoElement;
+    if (!isHlsElement(el)) {
+      if (isMediaDecodeFailure(el.error?.code)) retryWithHls(el, assetId);
+      return;
+    }
     if (
-      isHlsElement(el) &&
       isMediaDecodeFailure(el.error?.code) &&
       (!el.api || isHevcCodec(currentVideoCodec(el)))
     ) {
       retryWithAvc(el, assetId);
     }
+  };
+
+  const retryWithHls = (el: HTMLVideoElement, id: string) => {
+    if (videoPlayer !== el || assetId !== id || !featureFlagsManager.value.realtimeTranscoding ||
+      !playOriginalVideo || directFallbackAssetId === id) return;
+    rememberPlayback(el, id);
+    isLoading = true;
+    directFallbackAssetId = id;
   };
 
   const handleLoadedMetadata = (el: HTMLVideoElement) => {
@@ -265,6 +298,7 @@
     if (!api) {
       return;
     }
+    if (resumeTime !== undefined) hlsPositionHint = { api, position: resumeTime };
 
     // This is a hack to make the rendition menu use `api.currentLevel` instead of `api.nextLevel`.
     // `api.nextLevel` makes the player request the next segment followed by the current segment.
@@ -273,6 +307,7 @@
       configurable: true,
       get: () => api.currentLevel,
       set: (level: number) => {
+        hlsPositionHint = { api, position: playbackPosition(el).currentTime };
         api.currentLevel = level;
       },
     });
@@ -353,6 +388,18 @@
     showVideo = true;
   });
 
+  let displayedMode: { assetId: string; original: boolean } | undefined;
+  $effect.pre(() => {
+    const previous = displayedMode;
+    displayedMode = { assetId, original: playOriginalVideo };
+    if (previous?.assetId === assetId && previous.original !== playOriginalVideo && videoPlayer) {
+      untrack(() => rememberPlayback(videoPlayer!, assetId));
+      // A fresh explicit Original selection may retry after an earlier fallback.
+      if (playOriginalVideo) directFallbackAssetId = undefined;
+    }
+    if (previous && previous.assetId !== assetId) directFallbackAssetId = undefined;
+  });
+
   $effect(() => {
     // reactive on `assetFileUrl` changes
     hasLoadedMetadata = false;
@@ -373,7 +420,16 @@
         const resumeTime = pendingResume?.assetId === assetId ? pendingResume.currentTime : undefined;
         queueMicrotask(() => wireHlsListeners(el, assetId, resumeTime));
       } else {
-        videoPlayer.load();
+        videoPlayer.src = assetFileUrl;
+        const el = videoPlayer;
+        const id = assetId;
+        const stopMonitor = featureFlagsManager.value.realtimeTranscoding && playOriginalVideo
+          ? monitorDirectPlayback(el, () => retryWithHls(el, id))
+          : undefined;
+        return () => {
+          stopMonitor?.();
+          releaseSession();
+        };
       }
     }
     return releaseSession;
@@ -447,6 +503,41 @@
   // The time is only refreshed on HLS fragment decode by default,
   // so manually emit events on seek to update it immediately.
   const onSeeking = (event: Event) => event.currentTarget?.dispatchEvent(new Event('timeupdate'));
+
+  const handleControlKeydown = (event: KeyboardEvent) => {
+    if (event.key !== ' ') return;
+    // Space activates the focused control. Do not also let the body shortcut
+    // toggle video playback; controls inside shadow roots appear in this path.
+    if (event.composedPath().some((target) => target instanceof HTMLElement && target !== event.currentTarget &&
+      (target.tagName.startsWith('MEDIA-') || target.matches('button, input, select, textarea, [role="button"], [role="slider"], [role^="menuitem"]')))) {
+      event.stopPropagation();
+    }
+  };
+
+  const controlShortcuts = (controller: HTMLElement, media: HTMLVideoElement | undefined) => {
+    let generation = 0;
+    let disposed = false;
+    const updateMedia = (next: HTMLVideoElement | undefined) => {
+      const version = ++generation;
+      // media-chrome 4.19.2 can process an added replacement before the removed
+      // old media and then clear its store. Rebind after that mutation batch,
+      // preserving this controller (and its fullscreen element and controls).
+      queueMicrotask(() => {
+        if (disposed || version !== generation || !next || !controller.isConnected ||
+          controller.querySelector(':scope > [slot=media]') !== next) return;
+        (controller as HTMLElement & { mediaSetCallback: (el: HTMLVideoElement) => void }).mediaSetCallback(next);
+      });
+    };
+    controller.addEventListener('keydown', handleControlKeydown);
+    updateMedia(media);
+    return {
+      update: updateMedia,
+      destroy: () => {
+        disposed = true;
+        controller.removeEventListener('keydown', handleControlKeydown);
+      },
+    };
+  };
 </script>
 
 <svelte:body
@@ -495,8 +586,9 @@
         class="dark h-full max-w-full"
         style:aspect-ratio={aspectRatio}
         defaultduration={asset.duration! / 1000}
+        use:controlShortcuts={videoPlayer}
       >
-        {#if featureFlagsManager.value.realtimeTranscoding}
+        {#if useHls}
           <hls-video
             bind:this={videoPlayer}
             slot="media"
@@ -527,15 +619,16 @@
           <video
             bind:this={videoPlayer}
             slot="media"
-            src={assetFileUrl}
             loop={$loopVideoPreference && loopVideo}
-            autoplay={$autoPlayVideo}
+            autoplay={$autoPlayVideo && pausedReloadAssetId !== assetId}
             disablePictureInPicture
             playsinline
             {...useSwipe(onSwipe)}
             class="h-full object-contain"
             oncanplay={(e) => handleCanPlay(e.currentTarget)}
-            onloadedmetadata={() => (hasLoadedMetadata = true)}
+            onloadedmetadata={(e) => handleLoadedMetadata(e.currentTarget)}
+            onplay={(e) => handlePlay(e.currentTarget)}
+            onerror={handleMediaError}
             onended={onVideoEnded}
             onseeking={onSeeking}
             onplaying={(e) => {
@@ -562,7 +655,7 @@
                 <span slot="title">{$t('media_chrome.playback_rate')}</span>
               </media-playback-rate-menu>
             </media-settings-menu-item>
-            {#if featureFlagsManager.value.realtimeTranscoding}
+            {#if useHls}
               <media-settings-menu-item class="mx-1 rounded-lg p-1 ps-2">
                 {$t('video_quality')}
                 <Icon slot="suffix" icon={mdiChevronRight} class="m-2" />

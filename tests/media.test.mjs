@@ -22,6 +22,7 @@ const TranscodeTarget = { All: 'ALL', Video: 'VIDEO', Audio: 'AUDIO', None: 'NON
 const context = vm.createContext({
   VideoCodec,
   TranscodeTarget,
+  AacProfile: { Lc: 2 },
   TranscodeHardwareAcceleration: { Rkmpp: 'rkmpp', Disabled: 'disabled' },
   ToneMapping: { Disabled: 'disabled', Hable: 'hable' },
   ColorTransfer: { Smpte2084: 16, AribStdB67: 18 },
@@ -138,6 +139,64 @@ for (const mali of [false, true]) {
 }
 
 for (const codec of ['hevc', 'h264']) {
+  const hlsOptions = {
+    inputPath: '/fixture.mp4', packetCount: 300, timeBase: 1, totalDuration: 10,
+    segmentDuration: 2, initFilename: 'init.mp4', segmentFilename: '/hls/seg_%d.m4s',
+    startSegment: 3, seekSeconds: 5.983333, playlistFilename: '/hls/playlist.m3u8', target: TranscodeTarget.All,
+  };
+  const compatibleAudio = { index: 1, codecName: 'aac', profile: 2, bitrate: 192_000, channels: 2, sampleRate: 48_000 };
+
+  test(`${codec} HLS preserves ordinary AAC-LC packets without changing offline conversion`, () => {
+    const sut = handler(false, { targetVideoCodec: codec });
+    for (const channels of [1, 2]) {
+      for (const sampleRate of [32_000, 44_100, 48_000]) {
+        const audio = { ...compatibleAudio, channels, sampleRate };
+        const args = plain(sut.getHlsCommand(hlsOptions, video({ colorTransfer: 1 }), audio));
+        assert.equal(argument(args, '-c:v'), `${codec}_rkmpp`);
+        assert.equal(argument(args, '-c:a'), 'copy');
+        assert.equal(args.includes('-ac'), false, 'Stream copy must not receive an audio conversion option');
+        assert.equal(argument(args, '-ss'), '5.983333');
+        assert.ok(args.includes('-copyts'), 'Source clock must remain intact');
+        assert.equal(argument(args, '-bsf:a'), 'noise=amount=0:drop=lt(pts*tb\\,6)',
+          'Copied audio preroll must be discarded at the exact GOP boundary, not the midpoint seek');
+        const offline = plain(sut.getCommand(TranscodeTarget.All, video({ colorTransfer: 1 }), audio));
+        assert.equal(argument(offline.outputOptions, '-c:a'), 'aac');
+        assert.equal(argument(offline.outputOptions, '-ac'), '2');
+      }
+    }
+  });
+
+  test(`${codec} copied AAC trims fractional-rate seeks without rewriting timestamps or initial packets`, () => {
+    const sut = handler(false, { targetVideoCodec: codec });
+    const fractionalOptions = { ...hlsOptions, packetCount: 300, timeBase: 30_000, totalDuration: 300_300 };
+    const args = plain(sut.getHlsCommand(fractionalOptions, video({ colorTransfer: 1 }), compatibleAudio));
+    const fps = 300 * 30_000 / 300_300;
+    const boundary = 3 * Math.ceil(2 * fps) / fps;
+    assert.equal(argument(args, '-bsf:a'), `noise=amount=0:drop=lt(pts*tb\\,${boundary})`);
+    assert.ok(args.includes('-copyts'));
+    assert.equal(args.includes('-start_at_zero'), false);
+    const initial = plain(sut.getHlsCommand({ ...hlsOptions, startSegment: 0, seekSeconds: 0 }, video(), compatibleAudio));
+    assert.equal(initial.includes('-bsf:a'), false, 'Initial AAC priming must remain intact');
+  });
+
+  test(`${codec} HLS encodes incompatible, unknown, surround and high-rate audio`, () => {
+    const sut = handler(false, { targetVideoCodec: codec });
+    const cases = [
+      { codecName: 'flac' }, { codecName: 'pcm_s16le' }, { codecName: 'opus' },
+      { profile: 5 }, { profile: null }, { channels: 6 }, { channels: undefined },
+      { sampleRate: 96_000 }, { sampleRate: undefined },
+      { bitrate: 0 }, { bitrate: Number.NaN }, { bitrate: 320_000 },
+    ];
+    for (const override of cases) {
+      const args = plain(sut.getHlsCommand(hlsOptions, video({ colorTransfer: 1 }), { ...compatibleAudio, ...override }));
+      assert.equal(argument(args, '-c:a'), 'aac', JSON.stringify(override));
+      assert.equal(argument(args, '-ac'), '2');
+      assert.equal(args.includes('-bsf:a'), false, 'Decoded audio uses normal accurate seeking');
+    }
+    const explicitAudio = plain(sut.getHlsCommand({ ...hlsOptions, target: TranscodeTarget.Audio }, video(), compatibleAudio));
+    assert.equal(argument(explicitAudio, '-c:a'), 'aac', 'An explicit audio conversion must remain an audio conversion');
+  });
+
   test(`${codec} normalizes full-size 10-bit SDR to NV12 and keeps hardware encoding`, () => {
     const command = plain(handler(false, { targetVideoCodec: codec }).getCommand(TranscodeTarget.All, video({ colorTransfer: 1 })));
     assert.equal(argument(command.outputOptions, '-vf'), 'scale_rkrga=format=nv12:afbc=1:async_depth=4');

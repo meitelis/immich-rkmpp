@@ -1,0 +1,56 @@
+FROM ghcr.io/immich-app/base-server-dev:202610211607@sha256:f99c605b44b291834cb680b80fd606f2b7c4bee5d8f9591bfdac51fdbd68c21d AS builder
+ENV CI=1 \
+    PNPM_HOME=/buildcache/pnpm-store \
+    PATH="/buildcache/pnpm-store:$PATH"
+RUN npm install --global pnpm@11.27.1 && pnpm config set store-dir "$PNPM_HOME"
+WORKDIR /usr/src/app
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .pnpmfile.cjs ./
+
+FROM builder AS sdk
+COPY packages/sdk/package.json packages/sdk/package.json
+RUN pnpm --filter @immich/sdk install --frozen-lockfile
+COPY packages/sdk packages/sdk/
+RUN pnpm --filter @immich/sdk build
+
+FROM sdk AS plugin-sdk
+COPY packages/plugin-sdk/package.json packages/plugin-sdk/package.json
+RUN pnpm --filter @immich/plugin-sdk install --frozen-lockfile
+COPY packages/plugin-sdk packages/plugin-sdk/
+RUN pnpm --filter @immich/plugin-sdk build
+
+FROM plugin-sdk AS server
+COPY server/package.json server/package.json
+RUN pnpm --filter immich install --frozen-lockfile
+COPY server server/
+RUN pnpm --filter immich check && \
+    pnpm --filter immich exec vitest run --config test/vitest.config.mjs \
+      src/services/hls.service.spec.ts src/services/transcoding.service.spec.ts src/dtos/streaming.dto.spec.ts && \
+    pnpm --filter immich build
+
+FROM sdk AS web
+COPY web/package.json web/package.json
+RUN pnpm --filter immich-web install --frozen-lockfile
+COPY i18n i18n/
+COPY web web/
+ARG IMMICH_BUILD=rkmpp-3.3.5-r3
+ENV IMMICH_BUILD=${IMMICH_BUILD}
+RUN pnpm --filter immich-web exec svelte-kit sync && \
+    pnpm --filter immich-web check:svelte && \
+    pnpm --filter immich-web check:typescript && \
+    pnpm --filter immich-web build
+
+# Reuse matching runtime dependencies, FFmpeg, CLI and core plugins.
+FROM ghcr.io/immich-app/immich-server:v3.3.5@sha256:485d546a2e31d6a8b4db8423fcba5c109de8c218d93410af115fd1ccfc4352a6 AS rkmpp
+COPY --from=server /usr/src/app/server/dist /usr/src/app/server/dist
+COPY --from=web /usr/src/app/web/build /build/www
+COPY LICENSE /licenses/immich-rkmpp/LICENSE
+COPY RKMPP_NOTICE /licenses/immich-rkmpp/NOTICE
+ARG RKMPP_REVISION=local
+ARG IMMICH_BUILD=rkmpp-3.3.5-r3
+ENV IMMICH_BUILD=${IMMICH_BUILD}
+LABEL org.opencontainers.image.title="Immich RKMPP" \
+      org.opencontainers.image.version="3.3.5-rkmpp-r3" \
+      org.opencontainers.image.source="https://github.com/meitelis/immich-rkmpp" \
+      org.opencontainers.image.revision="${RKMPP_REVISION}" \
+      cc.immich-rkmpp.upstream-version="3.3.5" \
+      cc.immich-rkmpp.upstream-revision="8303cb117e197c700332b33b61b45314c9cc5bb4"

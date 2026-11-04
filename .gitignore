@@ -1,0 +1,17 @@
+work/
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+*.tar
+*.tar.gz
+*.zip
+verification/raw/
+*.key
+*.pem
+*.crt
+known_hosts
+backups/
+immich-rkmpp-backups/
+*.private.json

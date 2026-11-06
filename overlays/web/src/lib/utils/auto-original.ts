@@ -69,12 +69,12 @@ export const originalIsAffordable = (info: OriginalPlaybackInfo, bitsPerSecond: 
 };
 
 export const originalEndpointUrl = (masterUrl: string, endpoint: 'original-info' | 'network-probe',
-  authParams: Record<string, string | undefined> = {}) => {
+  authParams: Record<string, unknown> = {}) => {
   const url = new URL(masterUrl);
   if (!url.pathname.endsWith('/main.m3u8')) throw new Error('Unexpected Immich HLS master URL');
   url.pathname = url.pathname.slice(0, -'main.m3u8'.length) + endpoint;
   for (const [key, value] of Object.entries(authParams)) {
-    if (value) url.searchParams.set(key, value);
+    if (typeof value === 'string' && value) url.searchParams.set(key, value);
   }
   return url.href;
 };
@@ -88,7 +88,7 @@ export const preferDirectOriginal = async ({
   now = () => performance.now(),
 }: {
   masterUrl: string;
-  authParams?: Record<string, string | undefined>;
+  authParams?: Record<string, unknown>;
   canPlay: CanPlay;
   signal?: AbortSignal;
   fetcher?: typeof fetch;

@@ -117,6 +117,29 @@ test('default master retains both configured codecs and authentication access ch
   assert.equal(accesses[0].auth, auth);
 });
 
+test('1800p source gets exact 3200x1800 HLS from configured 2160 rung without upscaling', async () => {
+  const { sut } = setup({
+    width: 3200, height: 1800, codecs: ['h264', 'hevc'],
+    resolutions: [480, 720, 1080, 1440, 2160],
+  });
+  const playlist = await sut.getMainPlaylist(auth, 'asset');
+  assert.match(playlist, /RESOLUTION=3200x1800/);
+  assert.doesNotMatch(playlist, /RESOLUTION=3840x2160/);
+  assert.ok(playlist.includes(`${sessionId}/13/playlist.m3u8`), 'HEVC uses stable 2160-rung index');
+  assert.ok(playlist.includes(`${sessionId}/14/playlist.m3u8`), 'AVC uses stable 2160-rung index');
+});
+
+test('1800p source respects the configured resolution limit when 2160 is disabled', async () => {
+  const { sut } = setup({
+    width: 3200, height: 1800, codecs: ['h264', 'hevc'],
+    resolutions: [480, 720, 1080, 1440],
+  });
+  const playlist = await sut.getMainPlaylist(auth, 'asset');
+  assert.match(playlist, /RESOLUTION=2560x1440/);
+  assert.doesNotMatch(playlist, /RESOLUTION=3200x1800/);
+  assert.doesNotMatch(playlist, /\/13\/playlist\.m3u8/);
+});
+
 test('sources below the minimum ladder retain their real dimensions in the master', async () => {
   const { sut } = setup({ width: 320, height: 180 });
   const playlist = await sut.getMainPlaylist(auth, 'asset');

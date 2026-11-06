@@ -31,7 +31,13 @@ These additions are source changes, not a claim that the current live image alre
 
 ## Still proposed
 
-Automatic original-first selection is **not implemented**. The current asset response supplies MIME type, dimensions, size and duration, but lacks the original video/audio codec, profile, HDR and frame-rate information needed for a reliable compatibility decision. A future implementation needs authorized source metadata and conservative, server-specific throughput measurements.
+Automatic original-first selection is implemented on the separate
+`feat/auto-original-rkmpp-playback` branch and **awaits full production-build and live-client validation**.
+It adds authorized stream metadata, a bounded same-origin throughput probe and
+a conservative browser codec/bitrate gate. Unknown or unsafe cases start
+existing HLS instead. The existing direct playback monitor supplies one-way
+direct-to-HLS fallback; there is no automatic return to the original during
+a session. The user can toggle Auto; explicit Original is retained.
 
 Independent shared audio is **not implemented**. Current HLS renditions contain muxed audio; manual quality selection retains the immediate buffer-flushing behavior. Using a non-flushing switch unconditionally could defer a visible change until the existing 30–60 second buffer drains. Shared audio, bounded switching and continuity require further design and real-client verification. No click-free or seamless-switching guarantee is made.
 

@@ -57,7 +57,7 @@ test('auth and base path survive metadata and speed probe URL construction', () 
 
 function setup({
   info = source, sampleMs = 100, compatible = supported, bytes = 1024 * 1024,
-  networkStatus = 200, metadataStatus = 200, encoding = null, signal,
+  networkStatus = 200, metadataStatus = 200, encoding = null, signal, onDecision,
 } = {}) {
   let time = 1000;
   const calls = [];
@@ -76,7 +76,7 @@ function setup({
     calls,
     measure: () => preferDirectOriginal({
       masterUrl: MASTER, authParams: { password: 'shared' },
-      canPlay: compatible, fetcher, now: () => time, signal,
+      canPlay: compatible, fetcher, now: () => time, signal, onDecision,
     }),
   };
 }
@@ -114,4 +114,19 @@ test('aborted or stale requests never enable direct playback', async () => {
   // already-aborted signal always wins.
   abortDuringDownload.abort();
   assert.equal(await second.measure(), false);
+});
+
+test('Auto decision reports why it selected HLS or Original', async () => {
+  const events = [];
+  const report = (direct, reason) => events.push({ direct, reason });
+  await setup({ onDecision: report }).measure();
+  await setup({ compatible: () => '', onDecision: report }).measure();
+  await setup({ sampleMs: 1400, onDecision: report }).measure();
+  await setup({ metadataStatus: 403, onDecision: report }).measure();
+  assert.deepEqual(events, [
+    { direct: true, reason: 'original selected' },
+    { direct: false, reason: 'browser reports source codec unsupported' },
+    { direct: false, reason: 'measured connection below original bitrate headroom' },
+    { direct: false, reason: 'metadata unavailable' },
+  ]);
 });

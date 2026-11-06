@@ -705,7 +705,7 @@
                 tabindex="0"
                 aria-checked={automaticOriginal}
                 onclick={toggleAutomaticOriginal}
-                onkeydown={(event) => {
+                onkeydown={(event: KeyboardEvent) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
                     toggleAutomaticOriginal();

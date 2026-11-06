@@ -471,11 +471,23 @@
     return () => controller.abort();
   });
 
-  const toggleAutomaticOriginal = () => {
+  const setAutomaticOriginal = (enabled: boolean) => {
+    if (enabled === automaticOriginal) return;
     if (videoPlayer && assetFileUrl) rememberPlayback(videoPlayer, assetId);
-    automaticOriginal = !automaticOriginal;
+    automaticOriginal = enabled;
     autoOriginalDecision = undefined;
     directFallbackAssetId = undefined;
+  };
+
+  // media-chrome handles checkable menu-item clicks itself and dispatches a
+  // `change` event from the parent menu. A click listener on the item does
+  // not reliably fire or update its Svelte state.
+  const handleOriginalMenuChange = (event: Event) => {
+    if (event.target !== event.currentTarget) return;
+    const menu = event.currentTarget as HTMLElement;
+    const checkbox = menu.querySelector('media-settings-menu-item[type="checkbox"][value="auto-original"]');
+    if (!checkbox) return;
+    setAutomaticOriginal(checkbox.getAttribute('aria-checked') === 'true');
   };
 
   const onPagehide = (event: PageTransitionEvent) => {
@@ -688,7 +700,7 @@
         {/if}
 
         {#if extendedControls}
-          <media-settings-menu hidden anchor="auto" class="min-w-3xs rounded-xl border border-light-300 shadow-sm">
+          <media-settings-menu hidden anchor="auto" class="min-w-3xs rounded-xl border border-light-300 shadow-sm" onchange={handleOriginalMenuChange}>
             <Icon slot="checked-indicator" icon={mdiCheck} class="m-2" />
             <media-settings-menu-item class="mx-1 rounded-lg p-1 ps-2">
               {$t('media_chrome.playback_rate')}
@@ -701,19 +713,12 @@
             {#if featureFlagsManager.value.realtimeTranscoding && !playOriginalVideo}
               <media-settings-menu-item
                 class="mx-1 rounded-lg p-1 ps-2"
-                role="menuitemcheckbox"
-                tabindex="0"
+                type="checkbox"
+                value="auto-original"
+                checked={automaticOriginal}
                 aria-checked={automaticOriginal}
-                onclick={toggleAutomaticOriginal}
-                onkeydown={(event: KeyboardEvent) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    toggleAutomaticOriginal();
-                  }
-                }}
               >
                 Auto: prefer original ({automaticOriginal ? 'on' : 'off'})
-                {#if automaticOriginal}<Icon slot="suffix" icon={mdiCheck} class="m-2" />{/if}
               </media-settings-menu-item>
             {/if}
             {#if useHls}

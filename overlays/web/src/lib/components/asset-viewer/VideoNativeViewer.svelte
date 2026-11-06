@@ -465,6 +465,11 @@
       authParams: authManager.params,
       canPlay: (mime) => decoder.canPlayType(mime),
       signal: controller.signal,
+      onDecision: (direct, reason) => {
+        if (!controller.signal.aborted && assetId === id) {
+          console.info(`[Immich RKMPP Auto Original] ${direct ? 'Original' : 'HLS'}: ${reason}`);
+        }
+      },
     }).then((direct) => {
       if (!controller.signal.aborted && assetId === id) autoOriginalDecision = { assetId: id, direct };
     });
@@ -718,7 +723,9 @@
                 checked={automaticOriginal}
                 aria-checked={automaticOriginal}
               >
-                Auto: prefer original ({automaticOriginal ? 'on' : 'off'})
+                Auto: prefer original ({automaticOriginal
+                  ? autoOriginalPending ? 'checking' : autoOriginalDirect ? 'on · Original' : 'on · HLS'
+                  : 'off'})
               </media-settings-menu-item>
             {/if}
             {#if useHls}

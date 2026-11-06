@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { constants } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import type { ArgOf } from 'src/repositories/event.repository.js';
 import type { HlsMainPlaylistQueryDto } from 'src/dtos/streaming.dto.js';
@@ -45,6 +46,41 @@ export class HlsService extends BaseService {
   @OnEvent({ name: 'HlsSegmentResult', server: true, workers: [ImmichWorker.Api] })
   onSegmentResult(event: ArgOf<'HlsSegmentResult'>) {
     this.pendingSegments.complete(this.getSegmentKey(event), event);
+  }
+
+  // Authenticated metadata for the browser's conservative direct-file decision.
+  // Reuses indexed streams; no FFprobe, no original path and no transcoder start.
+  async getOriginalPlaybackInfo(auth: AuthDto, assetId: string) {
+    await this.requireAccess({ auth, permission: Permission.AssetView, ids: [assetId] });
+    const asset = await this.videoStreamRepository.getForTranscoding(assetId);
+    if (!asset) {
+      throw new NotFoundException('Video metadata is not available');
+    }
+    const video = asset.videoStream;
+    const audio = asset.audioStream;
+    const extension = asset.originalPath.split('.').at(-1)?.toLowerCase() ?? '';
+    return {
+      container: extension,
+      videoCodec: video.codecName,
+      videoProfile: video.profile,
+      videoLevel: video.level,
+      pixelFormat: video.pixelFormat,
+      colorTransfer: video.colorTransfer,
+      dvProfile: video.dvProfile,
+      audioCodec: audio?.codecName ?? null,
+      audioProfile: audio?.profile ?? null,
+      bitrate: Math.max(asset.format.bitrate ?? 0, video.bitrate + (audio?.bitrate ?? 0)),
+      width: video.width,
+      height: video.height,
+      frameRate: video.frameRate,
+    };
+  }
+
+  // Incompressible same-origin response: bounded network measurement without
+  // reading a private original or creating a hardware transcode session.
+  async getOriginalNetworkProbe(auth: AuthDto, assetId: string) {
+    await this.requireAccess({ auth, permission: Permission.AssetView, ids: [assetId] });
+    return randomBytes(1024 * 1024);
   }
 
   async getMainPlaylist(auth: AuthDto, assetId: string, videoCodec?: HlsMainPlaylistQueryDto['videoCodec']) {

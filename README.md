@@ -65,6 +65,34 @@ sh scripts/rollback.sh --state-dir /path/to/private/immich-rkmpp-backups/deploy-
 
 This recreates only the server from its previous resolved configuration and exact saved image ID. It does not roll back the database or media. Restore the pre-change Compose source as well before a later Portainer or Compose stack redeploy; the rollback command does not edit that source file.
 
+## Draft: automatic original-first playback
+
+This development branch adds **Auto: prefer original (on/off)** to the Immich
+video settings menu (when extended controls are available). Auto is on by
+default, while the existing explicit **Play original** choice still overrides it.
+
+Before starting any FFmpeg process, the web player requests indexed codec,
+profile, container and bitrate metadata from an authenticated API route. Known
+MP4/M4V AVC or HEVC files with supported AAC-LC audio may play as the unmodified
+original when the browser advertises codec support and an uncached, one-MiB
+same-origin sample measures at least 1.8x the source's recorded bitrate.
+The decision takes at most 2.2 seconds; uncertain metadata, unsupported codecs,
+HDR/Dolby Vision, errors, poor throughput or cancelled requests select Immich's
+existing HLS path. Manual Original remains available for those sources.
+
+If a direct original subsequently fails decoding, stalls persistently or the
+playable buffer drains, the existing monitor switches once to adaptive HLS,
+preserving the playback time and paused/playing state. It does not switch back
+to original during the same asset session. Changing Auto from the settings menu
+re-evaluates the choice. Probes are authenticated, no-store, bounded, and do
+not read the original file or create a transcoder session.
+
+**Release status:** source implementation under review. Do not deploy before
+the ARM64 production build, browser integration checks and actual ROCK 5B+
+playback tests pass. A network sample is not a guarantee against VBR spikes,
+server load or future Wi-Fi degradation. Native mobile clients retain their
+original playback implementation; this feature targets the web viewer only.
+
 ## Playback configuration
 
 In Immich's administration settings, select RKMPP, enable hardware decoding and real-time transcoding, and enable HEVC and H.264 with the desired resolution ladder. The browser selects an efficient supported codec; it can retry once with an H.264-only master if HEVC decoding fails. Native HLS playback uses the same server-side codec filter for that retry.

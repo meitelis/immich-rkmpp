@@ -1,4 +1,4 @@
-import { Controller, Delete, Get, Header, Headers, HttpCode, HttpStatus, Next, Param, Query, Res } from '@nestjs/common';
+import { Controller, Delete, Get, Header, Headers, HttpCode, HttpStatus, Next, Param, Query, Res, StreamableFile } from '@nestjs/common';
 import { ApiProduces, ApiTags } from '@nestjs/swagger';
 import { ZodValidationException } from 'nestjs-zod';
 import type { NextFunction, Response } from 'express';
@@ -27,6 +27,31 @@ export class VideoStreamController {
     private logger: LoggingRepository,
     private service: HlsService,
   ) {}
+
+  @Get(':id/video/stream/original-info')
+  @Authenticated({ permission: Permission.AssetView, sharedLink: true })
+  @Header('Cache-Control', 'private, no-store')
+  @Endpoint({
+    summary: 'Get original playback capabilities',
+    description: 'Returns indexed codec, container and bitrate information for a conservative direct-play decision.',
+    history: new HistoryBuilder().added('v3').alpha('v3'),
+  })
+  getOriginalInfo(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto) {
+    return this.service.getOriginalPlaybackInfo(auth, id);
+  }
+
+  @Get(':id/video/stream/network-probe')
+  @Authenticated({ permission: Permission.AssetView, sharedLink: true })
+  @Header('Cache-Control', 'private, no-store, no-transform')
+  @Header('Content-Type', 'application/octet-stream')
+  @Endpoint({
+    summary: 'Measure direct playback network capacity',
+    description: 'Returns one MiB of uncached random bytes over the authenticated media origin.',
+    history: new HistoryBuilder().added('v3').alpha('v3'),
+  })
+  async getOriginalProbe(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto) {
+    return new StreamableFile(await this.service.getOriginalNetworkProbe(auth, id));
+  }
 
   @Get(':id/video/stream/main.m3u8')
   @Authenticated({ permission: Permission.AssetView, sharedLink: true })

@@ -699,7 +699,19 @@
               </media-playback-rate-menu>
             </media-settings-menu-item>
             {#if featureFlagsManager.value.realtimeTranscoding && !playOriginalVideo}
-              <media-settings-menu-item class="mx-1 rounded-lg p-1 ps-2" onclick={toggleAutomaticOriginal}>
+              <media-settings-menu-item
+                class="mx-1 rounded-lg p-1 ps-2"
+                role="menuitemcheckbox"
+                tabindex="0"
+                aria-checked={automaticOriginal}
+                onclick={toggleAutomaticOriginal}
+                onkeydown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    toggleAutomaticOriginal();
+                  }
+                }}
+              >
                 Auto: prefer original ({automaticOriginal ? 'on' : 'off'})
                 {#if automaticOriginal}<Icon slot="suffix" icon={mdiCheck} class="m-2" />{/if}
               </media-settings-menu-item>

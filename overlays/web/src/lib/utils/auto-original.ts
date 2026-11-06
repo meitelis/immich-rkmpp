@@ -84,6 +84,7 @@ export const preferDirectOriginal = async ({
   authParams,
   canPlay,
   signal,
+  onDecision,
   fetcher = fetch,
   now = () => performance.now(),
 }: {
@@ -91,10 +92,15 @@ export const preferDirectOriginal = async ({
   authParams?: Record<string, unknown>;
   canPlay: CanPlay;
   signal?: AbortSignal;
+  onDecision?: (direct: boolean, reason: string) => void;
   fetcher?: typeof fetch;
   now?: () => number;
 }): Promise<boolean> => {
   const controller = new AbortController();
+  const decision = (direct: boolean, reason: string) => {
+    if (!signal?.aborted) onDecision?.(direct, reason);
+    return direct;
+  };
   const cancel = () => controller.abort();
   if (signal?.aborted) return false;
   signal?.addEventListener('abort', cancel, { once: true });
@@ -103,23 +109,25 @@ export const preferDirectOriginal = async ({
   try {
     const metadataUrl = originalEndpointUrl(masterUrl, 'original-info', authParams);
     const response = await fetcher(metadataUrl, { signal: controller.signal, cache: 'no-store' });
-    if (!response.ok) return false;
+    if (!response.ok) return decision(false, 'metadata unavailable');
     const info = await response.json() as OriginalPlaybackInfo;
     const mime = originalContentType(info);
-    if (!mime || canPlay(mime) === '') return false;
+    if (!mime) return decision(false, 'unsupported original metadata or format');
+    if (canPlay(mime) === '') return decision(false, 'browser reports source codec unsupported');
 
     const probeUrl = originalEndpointUrl(masterUrl, 'network-probe', authParams);
     const started = now();
     const sample = await fetcher(probeUrl, { signal: controller.signal, cache: 'no-store' });
-    if (!sample.ok || sample.headers.get('Content-Encoding')) return false;
+    if (!sample.ok || sample.headers.get('Content-Encoding')) return decision(false, 'network probe rejected');
     const body = await sample.arrayBuffer();
     const elapsedMs = Math.max(MIN_SAMPLE_MS, now() - started);
-    if (body.byteLength < MIN_PROBE_BYTES || controller.signal.aborted) return false;
-    return originalIsAffordable(info, body.byteLength * 8000 / elapsedMs, canPlay);
+    if (body.byteLength < MIN_PROBE_BYTES || controller.signal.aborted) return decision(false, 'network probe incomplete');
+    const direct = originalIsAffordable(info, body.byteLength * 8000 / elapsedMs, canPlay);
+    return decision(direct, direct ? 'original selected' : 'measured connection below original bitrate headroom');
   } catch {
     // Network, permissions, incomplete metadata, stale source and timeout all
     // fail closed to Immich's existing HLS path rather than speculative Original.
-    return false;
+    return decision(false, controller.signal.aborted ? 'request cancelled or timed out' : 'metadata or probe request failed');
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener('abort', cancel);

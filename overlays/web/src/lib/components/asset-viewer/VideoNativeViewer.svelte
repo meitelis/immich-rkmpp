@@ -10,6 +10,7 @@
   import { autoPlayVideo, lang, loopVideo as loopVideoPreference } from '$lib/stores/preferences.store';
   import { getAssetHlsSessionUrl, getAssetHlsUrl, getAssetMediaUrl, getAssetPlaybackUrl } from '$lib/utils';
   import { monitorDirectPlayback } from '$lib/utils/direct-playback';
+  import { preferDirectOriginal } from '$lib/utils/auto-original';
   import {
     isHevcCodec,
     isHevcDecodeFailure,
@@ -88,16 +89,26 @@
   let avcFallbackAssetId: string | undefined = $state();
   let directFallbackAssetId: string | undefined = $state();
   let pausedReloadAssetId: string | undefined = $state();
-  // Honour the existing Play original choice. Automatic playback keeps the
-  // adaptive ladder: the asset DTO does not expose original codec/HDR metadata.
+  // Explicit Original continues to override Auto. Auto checks codec and
+  // measured capacity before requesting either file or HLS, so no unnecessary
+  // RKMPP encoder is started on a fast, compatible connection.
+  let automaticOriginal = $state(true);
+  let autoOriginalDecision: { assetId: string; direct: boolean } | undefined = $state();
+  let autoOriginalPending = $derived(featureFlagsManager.value.realtimeTranscoding &&
+    !playOriginalVideo && automaticOriginal && directFallbackAssetId !== assetId &&
+    autoOriginalDecision?.assetId !== assetId);
+  let autoOriginalDirect = $derived(featureFlagsManager.value.realtimeTranscoding &&
+    !playOriginalVideo && automaticOriginal && directFallbackAssetId !== assetId &&
+    autoOriginalDecision?.assetId === assetId && autoOriginalDecision.direct);
   let useHls = $derived(featureFlagsManager.value.realtimeTranscoding &&
-    (!playOriginalVideo || directFallbackAssetId === assetId));
+    (!playOriginalVideo || directFallbackAssetId === assetId) && !autoOriginalDirect);
   let assetFileUrl = $derived.by(() => {
+    if (autoOriginalPending) return '';
     if (useHls) {
       return getAssetHlsUrl(assetId, avcFallbackAssetId === assetId ? 'h264' : undefined);
     }
 
-    if (playOriginalVideo) {
+    if (playOriginalVideo || autoOriginalDirect) {
       return getAssetMediaUrl({ id: assetId, size: AssetMediaSize.Original, cacheKey });
     }
 
@@ -272,7 +283,7 @@
 
   const retryWithHls = (el: HTMLVideoElement, id: string) => {
     if (videoPlayer !== el || assetId !== id || !featureFlagsManager.value.realtimeTranscoding ||
-      !playOriginalVideo || directFallbackAssetId === id) return;
+      (!playOriginalVideo && !autoOriginalDirect) || directFallbackAssetId === id) return;
     rememberPlayback(el, id);
     isLoading = true;
     directFallbackAssetId = id;
@@ -403,6 +414,12 @@
   $effect(() => {
     // reactive on `assetFileUrl` changes
     hasLoadedMetadata = false;
+    if (videoPlayer && !assetFileUrl) {
+      // Avoid continuing the previous asset while an Auto decision is pending.
+      videoPlayer.pause();
+      videoPlayer.src = '';
+      releaseSession();
+    }
     if (videoPlayer && assetFileUrl) {
       if (playbackAssetId !== assetId) {
         playbackAssetId = assetId;
@@ -423,7 +440,7 @@
         videoPlayer.src = assetFileUrl;
         const el = videoPlayer;
         const id = assetId;
-        const stopMonitor = featureFlagsManager.value.realtimeTranscoding && playOriginalVideo
+        const stopMonitor = featureFlagsManager.value.realtimeTranscoding && (playOriginalVideo || autoOriginalDirect)
           ? monitorDirectPlayback(el, () => retryWithHls(el, id))
           : undefined;
         return () => {
@@ -434,6 +451,32 @@
     }
     return releaseSession;
   });
+
+  // Cancel probes on navigation, mode changes and teardown; late decisions
+  // must never re-enable the old asset or bounce back after a fallback.
+  $effect(() => {
+    const id = assetId;
+    if (!featureFlagsManager.value.realtimeTranscoding || playOriginalVideo ||
+      !automaticOriginal || directFallbackAssetId === id || typeof document === 'undefined') return;
+    const controller = new AbortController();
+    const decoder = document.createElement('video');
+    void preferDirectOriginal({
+      masterUrl: getAssetHlsUrl(id),
+      authParams: authManager.params,
+      canPlay: (mime) => decoder.canPlayType(mime),
+      signal: controller.signal,
+    }).then((direct) => {
+      if (!controller.signal.aborted && assetId === id) autoOriginalDecision = { assetId: id, direct };
+    });
+    return () => controller.abort();
+  });
+
+  const toggleAutomaticOriginal = () => {
+    if (videoPlayer && assetFileUrl) rememberPlayback(videoPlayer, assetId);
+    automaticOriginal = !automaticOriginal;
+    autoOriginalDecision = undefined;
+    directFallbackAssetId = undefined;
+  };
 
   const onPagehide = (event: PageTransitionEvent) => {
     if (!event.persisted) {
@@ -655,6 +698,12 @@
                 <span slot="title">{$t('media_chrome.playback_rate')}</span>
               </media-playback-rate-menu>
             </media-settings-menu-item>
+            {#if featureFlagsManager.value.realtimeTranscoding && !playOriginalVideo}
+              <media-settings-menu-item class="mx-1 rounded-lg p-1 ps-2" onclick={toggleAutomaticOriginal}>
+                Auto: prefer original ({automaticOriginal ? 'on' : 'off'})
+                {#if automaticOriginal}<Icon slot="suffix" icon={mdiCheck} class="m-2" />{/if}
+              </media-settings-menu-item>
+            {/if}
             {#if useHls}
               <media-settings-menu-item class="mx-1 rounded-lg p-1 ps-2">
                 {$t('video_quality')}

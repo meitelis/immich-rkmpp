@@ -44,6 +44,7 @@ const serviceContext = vm.createContext({
   NotFoundException,
   BaseService: class {},
   PendingEvents,
+  randomBytes: (length) => new Uint8Array(length),
   HLS_VARIANTS,
   HLS_VERSION: 7,
   Permission: { AssetView: 'asset.read' },
@@ -72,6 +73,38 @@ function setup({ codecs = ['h264', 'hevc'], resolutions = [480, 720, 1080], enab
   } };
   return { sut, events, accesses };
 }
+
+test('authorized original metadata returns only the indexed playback fields, without reading media', async () => {
+  const { sut, accesses, events } = setup();
+  sut.videoStreamRepository.getForTranscoding = async () => ({
+    originalPath: '/private/DJI/test.MP4',
+    format: { bitrate: 7_760_000 },
+    videoStream: {
+      codecName: 'hevc', profile: 1, level: 153, pixelFormat: 'yuv420p',
+      colorTransfer: 1, dvProfile: null, bitrate: 7_000_000,
+      width: 3200, height: 1800, frameRate: 30,
+    },
+    audioStream: { codecName: 'aac', profile: 2, bitrate: 160_000 },
+  });
+  const info = await sut.getOriginalPlaybackInfo(auth, 'asset');
+  assert.equal(info.container, 'mp4');
+  assert.equal(info.width, 3200);
+  assert.equal(info.bitrate, 7_760_000);
+  assert.equal(info.audioCodec, 'aac');
+  assert.equal(info.videoProfile, 1);
+  assert.equal(Object.hasOwn(info, 'originalPath'), false, 'server paths are private');
+  assert.equal(events.length, 0, 'checking Original should not open an encoder session');
+  assert.equal(accesses[0].auth, auth);
+});
+
+test('network probe checks asset permissions before allocating one MiB, and metadata failure is safe', async () => {
+  const { sut, accesses } = setup();
+  const blob = await sut.getOriginalNetworkProbe(auth, 'asset');
+  assert.equal(blob.byteLength, 1024 * 1024);
+  assert.equal(accesses[0].auth, auth);
+  sut.videoStreamRepository.getForTranscoding = async () => undefined;
+  await assert.rejects(sut.getOriginalPlaybackInfo(auth, 'asset'), NotFoundException);
+});
 
 test('default master retains both configured codecs and authentication access checks', async () => {
   const { sut, events, accesses } = setup();

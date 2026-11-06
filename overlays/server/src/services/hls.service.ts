@@ -174,9 +174,16 @@ export class HlsService extends BaseService {
     const fps = (asset.packets.packetCount * asset.videoStream.timeBase) / asset.packets.totalDuration;
     const roundedFps = fps.toFixed(3);
     const sourceResolution = Math.min(asset.videoStream.height, asset.videoStream.width);
-    const targetResolution = Math.max(sourceResolution, HLS_VARIANTS[0].resolution);
     const lines = ['#EXTM3U', `#EXT-X-VERSION:${HLS_VERSION}`, '#EXT-X-INDEPENDENT-SEGMENTS'];
     const { videoCodecs, resolutions } = ffmpeg.realtime;
+    // The highest configured rung at or above the source is a full-source
+    // rendition, not an upscale. E.g. 3200x1800 uses the 2160 rung, which
+    // both this playlist and the worker clamp to the true 1800p dimensions.
+    // Do not change variant indices: the worker resolves them via HLS_VARIANTS.
+    const enclosingResolution = HLS_VARIANTS
+      .map(({ resolution }) => resolution)
+      .find((resolution) => resolution >= sourceResolution && resolutions.includes(resolution));
+    const targetResolution = enclosingResolution ?? Math.max(sourceResolution, HLS_VARIANTS[0].resolution);
     for (let i = 0; i < HLS_VARIANTS.length; i++) {
       const { resolution, bitrate, codec } = HLS_VARIANTS[i];
       if (

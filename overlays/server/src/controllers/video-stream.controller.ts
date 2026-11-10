@@ -46,7 +46,7 @@ export class VideoStreamController {
   @Header('Cache-Control', 'private, no-store')
   @Endpoint({
     summary: 'Get original playback capabilities',
-    description: 'Returns indexed codec, container and bitrate information for a conservative direct-play decision.',
+    description: 'Returns indexed codec metadata for checking Original rendition compatibility.',
     history: new HistoryBuilder().added('v3').alpha('v3'),
   })
   getOriginalInfo(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto) {
@@ -58,8 +58,8 @@ export class VideoStreamController {
   @Header('Cache-Control', 'private, no-store, no-transform')
   @Header('Content-Type', 'application/octet-stream')
   @Endpoint({
-    summary: 'Measure direct playback network capacity',
-    description: 'Returns one MiB of uncached random bytes over the authenticated media origin.',
+    summary: 'Measure playback network capacity',
+    description: 'Returns a bounded uncached random payload over the authenticated media origin.',
     history: new HistoryBuilder().added('v3').alpha('v3'),
   })
   async getOriginalProbe(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto, @Query('bytes') bytes?: string) {

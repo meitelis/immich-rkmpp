@@ -31,6 +31,7 @@ FROM sdk AS web
 COPY web/package.json web/package.json
 RUN pnpm --filter immich-web install --frozen-lockfile
 COPY i18n i18n/
+COPY open-api open-api/
 COPY web web/
 ARG IMMICH_BUILD=rkmpp-3.4.0-r4-memories
 ENV IMMICH_BUILD=${IMMICH_BUILD}

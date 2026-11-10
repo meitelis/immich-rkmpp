@@ -12,7 +12,9 @@ export type PlaybackPlan = {
 };
 export const PLAYBACK_EPSILON = 0.000001;
 export const AUDIO_SEGMENT_DURATION = (94 * 1024) / 48_000;
-export const playbackPacing = ['-readrate', '1', '-readrate_initial_burst', '18', '-readrate_catchup', '3.5'];
+// The pinned Immich FFmpeg lacks readrate_catchup. Preserve its supported input
+// pacing/burst rather than passing a flag that prevents every worker starting.
+export const playbackPacing = ['-readrate', '1', '-readrate_initial_burst', '18'];
 
 export function originalVideoCodec(video: VideoStreamInfo): string | undefined {
   if (video.rotation !== 0 || video.dvProfile !== null || [16, 18].includes(video.colorTransfer) || !video.level)

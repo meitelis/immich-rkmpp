@@ -188,7 +188,7 @@ export class BaseConfig implements VideoCodecSWConfig {
       args.push('-ss', String(options.seekSeconds));
       if (options.playback?.starts) args.push('-noaccurate_seek');
     }
-    if (options.playback) args.push('-readrate', '1', '-readrate_initial_burst', '18', '-readrate_catchup', '3.5');
+    if (options.playback) args.push('-readrate', '1', '-readrate_initial_burst', '18');
     args.push(
       '-nostdin',
       '-nostats',

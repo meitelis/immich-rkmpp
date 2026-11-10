@@ -23,6 +23,11 @@ GitHub Actions builds the pinned ARM64 server and browser image, runs the full
 targeted upstream server suites and real fragment checks with the candidate's
 FFmpeg. Its exact revision/result must be checked on the PR.
 
+The first ARM64 candidate built successfully and passed all 98 targeted server
+tests. Runtime fragment checks caught the bundled FFmpeg's missing
+readrate_catchup option. The port uses its supported readrate 1 / initial burst
+18 options and does not change the pinned FFmpeg or runtime dependencies.
+
 Still required: the new --memories RK3588 hardware cases and actual-browser
 fast/slow/network-change/quality-switch/seek/pause/EOF acceptance, with audible
 continuity and A/V drift checks. No live Immich instance was changed during

@@ -42,7 +42,8 @@ test('audio uses one independent AAC clock and both workers are input-paced', ()
   assert.equal(copy[copy.indexOf('-c:v') + 1], 'copy');
   assert.ok(copy.includes('-an'));
   for (const command of [copy, args]) {
-    assert.equal(command[command.indexOf('-readrate_catchup') + 1], '3.5');
+    assert.equal(command[command.indexOf('-readrate_initial_burst') + 1], '18');
+    assert.equal(command.includes('-readrate_catchup'), false);
     assert.ok(command.includes('-copyts'));
   }
 });

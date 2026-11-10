@@ -170,7 +170,7 @@ try {
       }, metadata.video, playback ? undefined : metadata.audio);
       if (playback) {
         assert.ok(args.includes('-an'), 'Shared-audio video must not mux an audio track');
-        assert.equal(args[args.indexOf('-readrate_catchup') + 1], '3.5');
+        assert.equal(args[args.indexOf('-readrate_initial_burst') + 1], '18');
         assert.ok(args.includes('-force_key_frames'));
       }
       entry.encoder = args[args.indexOf('-c:v') + 1];

@@ -27,7 +27,9 @@ the draft direct-file Auto policy with one adaptive HLS playback path.
   can take up to the retained buffer; it is not promised to be instant.
 - Forward buffer: 18 seconds, maximum 96 MiB; back buffer: 8 seconds. Only
   requested renditions run. Workers use FFmpeg input pacing: rate 1, initial
-  burst 18 seconds, catch-up 3.5. Pacing is not a throughput guarantee.
+  burst 18 seconds. The pinned Immich FFmpeg does not support Memories' explicit
+  3.5x catch-up ceiling, so that flag is deliberately omitted. Pacing is not a
+  throughput guarantee; the FFmpeg/runtime pin remains unchanged.
 - Completed transfer timings are separated from pre-first-byte producer waits.
   Two agreeing recent samples plus healthy buffer can correct an underestimated
   bandwidth estimate. Network/online/foreground changes and returning to Auto

@@ -95,7 +95,7 @@ test('Memories hardware commands keep video on its source grid without muxed aud
     playback: { starts: [0, 2.04, 4.08, 6.12, 8.16], start: 2.04, duration: 10 },
   }, video({ colorTransfer: 1 }));
   assert.equal(argument(args, '-readrate_initial_burst'), '18');
-  assert.equal(argument(args, '-readrate_catchup'), '3.5');
+  assert.equal(args.includes('-readrate_catchup'), false, 'the pinned Immich FFmpeg does not support this flag');
   assert.equal(argument(args, '-fps_mode'), 'passthrough');
   assert.ok(args.includes('-noaccurate_seek'));
   assert.ok(args.includes('-an'));

@@ -374,7 +374,8 @@
         data.response?.code !== 404 ||
         rebuildCount++ >= MAX_REBUILDS
       ) {
-        console.error('HLS error', JSON.stringify(data));
+        // JSON serialization drops Error.message/stack, hiding fatal recovery failures.
+        console.error('HLS error', data.error, JSON.stringify(data));
         return;
       }
       console.warn('Error loading segment, starting new session');

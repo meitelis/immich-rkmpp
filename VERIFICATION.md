@@ -14,6 +14,13 @@ compare Linux paths. The ARM64 CI result on the PR is authoritative.
 
 The user reports smooth playback and resolution switching on the corrected
 3.3.5 image. The 3.4.0 candidate still needs on-board and live playback checks.
+Follow-up live testing on 3.3.5 reproduced a 4K SDR Main10 clip stopping at
+3.94 seconds with 4.01 seconds buffered. Aborted fragment requests were followed
+by a fatal hls.js internal exception. A synthetic delayed-fragment test also
+reproduced a stall and Auto downshift, but not that fatal exception. The client
+now logs the original Error object alongside its JSON event so the missing
+message/stack can be captured. No buffering or adaptation change is claimed as
+a fix for this case; it remains open pending a trace from the updated client.
 Upgrading from 3.3.5 runs upstream database migrations: back up the database and
 stack before deployment; replacing the image alone does not undo migrations.
 

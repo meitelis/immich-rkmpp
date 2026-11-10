@@ -5,7 +5,7 @@ official 3.4.0 source and matching pinned runtime. Upstream event, image,
 public-config, import and FaceEditor changes are preserved. The quality menu
 adds advertised bitrate labels and always includes eligible Original in Auto.
 
-Local validation: 112 source/controller regressions, three real H.264/HEVC/AAC
+Local validation: 113 source/controller regressions, three real H.264/HEVC/AAC
 fragment cases, server/web TypeScript, Svelte diagnostics and both production
 builds pass. The actual Media Chrome 4.19.3 menu renders the new resolution,
 Original and bitrate labels without console errors in an isolated browser
@@ -38,6 +38,8 @@ throughput. No private media is included in the fixtures or repository.
 Cleanup now restores both temporary HLS hooks exactly and is idempotent; an old
 cleanup cannot detach a subsequent attachment. The menu formatter restores its
 native property, and unused metadata and duplicate pending state were removed.
+Casting bypasses local browser capability/probe decisions and retains the native
+authenticated HLS path; a regression checks the URL and skipped preparation.
 The 3.4.0 candidate still needs on-board and live playback acceptance.
 Upgrading from 3.3.5 runs upstream database migrations: back up the database and
 stack before deployment; replacing the image alone does not undo migrations.

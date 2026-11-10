@@ -65,7 +65,8 @@ It never silently encodes a rendition labelled Original.
 
 The new server behavior is requested with `strategy=memories`; native/mobile
 clients that do not request it retain the existing muxed HLS protocol and
-backpressure. Safari native HLS controls its own buffering and adaptation and
+backpressure. Casting also keeps that protocol and skips the local browser's
+codec and network decisions. Safari native HLS controls its own buffering and adaptation and
 is not established by hls.js tests. Offline transcoding settings are independent.
 
 ## Checks and deployment gate

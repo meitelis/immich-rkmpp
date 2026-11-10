@@ -107,13 +107,11 @@
   let useHls = $derived(
     publicConfig.ffmpeg.realtime.enabled && (!playOriginalVideo || directFallbackAssetId === assetId),
   );
-  let adaptivePending = $derived(useHls && adaptiveDecision?.assetId !== assetId);
   let assetFileUrl = $derived.by(() => {
-    if (adaptivePending) return '';
     if (useHls) {
-      return adaptiveDecision?.assetId === assetId
-        ? adaptiveDecision.url
-        : getAssetHlsUrl(assetId, avcFallbackAssetId === assetId ? 'h264' : undefined);
+      // A receiver negotiates its own codecs; local MSE/probe results do not apply.
+      if (castManager.isCasting) return getAssetHlsUrl(assetId);
+      return adaptiveDecision?.assetId === assetId ? adaptiveDecision.url : '';
     }
 
     if (playOriginalVideo) {
@@ -454,6 +452,7 @@
     const copy = copyFallbackAssetId !== id;
     if (
       !publicConfig.ffmpeg.realtime.enabled ||
+      castManager.isCasting ||
       (playOriginalVideo && directFallbackAssetId !== id) ||
       typeof document === 'undefined'
     )

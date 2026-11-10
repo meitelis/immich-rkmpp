@@ -130,7 +130,7 @@ const adaptiveSource = stripTypeScriptTypes((await readFile(sourcePath('utils/ad
 const utilsSource = await readFile(sourcePath('utils.ts'), 'utf8');
 const hlsUrlSource = stripTypeScriptTypes(utilsSource.match(/export const getAssetHlsUrl = [\s\S]*?\n};/)[0].replace('export ', ''));
 
-function harness({ native = false, paused = false, autoplay = true, original = false } = {}) {
+function harness({ native = false, paused = false, autoplay = true, original = false, casting = false } = {}) {
   const effects = [];
   const preEffects = [];
   const registerEffect = (callback) => effects.push(callback);
@@ -196,6 +196,7 @@ function harness({ native = false, paused = false, autoplay = true, original = f
     Hls, HTMLElement, AbrController: class {},
     createPreloadedQuery: () => ({ data: { ffmpeg: { realtime: { enabled: true } } } }),
     getPublicConfigQuery: () => {},
+    castManager: { isCasting: casting },
     authManager: { params: { key: 'keep-auth' } },
     createUrl: (path, params) => {
       const url = new URL(`/api${path}`, 'https://cloud.test');
@@ -226,6 +227,7 @@ function harness({ native = false, paused = false, autoplay = true, original = f
     controlKeydown(event) { handleControlKeydown(event); },
     controlShortcuts(el, media) { return controlShortcuts(el, media); },
     qualityLabels(el, ids) { return originalRenditionLabels(el, ids); },
+    source() { return assetFileUrl; },
     setupRequest(xhr, url) { hlsConfig.xhrSetup(xhr, url); },
     state() { return { avcFallbackAssetId, directFallbackAssetId, pendingResume, rebuildCount, activeSession }; },
   };`, context);
@@ -251,13 +253,24 @@ function harness({ native = false, paused = false, autoplay = true, original = f
   };
   const controls = context.harness;
   controls.setVideo(video);
-  return { controls, video, released, warnings, Hls, HTMLElement, preEffects };
+  return { controls, video, released, warnings, Hls, HTMLElement, preEffects, effects };
 }
 
 async function flush(h) {
   h.controls.flush();
   await Promise.resolve();
 }
+
+test('casting keeps the native authenticated HLS source without local capability or network probes', () => {
+  const h = harness({ casting: true });
+  const url = new URL(h.controls.source());
+  assert.equal(url.pathname, '/api/assets/asset-a/video/stream/main.m3u8');
+  assert.equal(url.searchParams.get('key'), 'keep-auth');
+  for (const key of ['copy', 'strategy', 'videoCodec']) assert.equal(url.searchParams.has(key), false);
+  assert.equal(h.effects[1](), undefined, 'the local playback preparation effect must skip casting');
+  assert.equal(h.released.length, 0);
+  assert.equal(harness().controls.source(), '', 'local playback waits for its own preparation');
+});
 
 test('quality labels follow manifest IDs, avoid duplicate bitrates and restore the native formatter', () => {
   const h = harness();

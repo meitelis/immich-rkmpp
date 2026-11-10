@@ -11,6 +11,12 @@
   import { getAssetHlsSessionUrl, getAssetHlsUrl, getAssetMediaUrl, getAssetPlaybackUrl } from '$lib/utils';
   import { monitorDirectPlayback } from '$lib/utils/direct-playback';
   import {
+    adaptiveHlsConfig,
+    attachAdaptivePlayback,
+    isOriginalLevel,
+    prepareAdaptivePlayback,
+  } from '$lib/utils/adaptive-playback';
+  import {
     isHevcCodec,
     isHevcDecodeFailure,
     isMediaDecodeFailure,
@@ -34,7 +40,7 @@
   } from '@mdi/js';
   import 'hls-video-element';
   import type HlsVideoElement from 'hls-video-element';
-  import Hls, { AbrController, Events, type FragLoadedData, type FragLoadingData, type HlsConfig } from 'hls.js';
+  import Hls, { type HlsConfig } from 'hls.js';
   import 'media-chrome/media-control-bar';
   import 'media-chrome/media-controller';
   import 'media-chrome/media-fullscreen-button';
@@ -88,13 +94,27 @@
   let avcFallbackAssetId: string | undefined = $state();
   let directFallbackAssetId: string | undefined = $state();
   let pausedReloadAssetId: string | undefined = $state();
-  // Honour the existing Play original choice. Automatic playback keeps the
-  // adaptive ladder: the asset DTO does not expose original codec/HDR metadata.
-  let useHls = $derived(featureFlagsManager.value.realtimeTranscoding &&
-    (!playOriginalVideo || directFallbackAssetId === assetId));
+  // Auto keeps copied Original and encoded renditions inside one HLS player.
+  // Explicit Play original remains a direct-file override.
+  let automaticOriginal = $state(true);
+  let copyFallbackAssetId: string | undefined = $state();
+  let adaptiveDecision: { assetId: string; url: string; bandwidth: number } | undefined = $state();
+  let playbackStatus = $state('');
+  let originalRenditionIds: string[] = $state([]);
+  let autoOriginalPending = $derived(
+    featureFlagsManager.value.realtimeTranscoding &&
+      (!playOriginalVideo || directFallbackAssetId === assetId) &&
+      adaptiveDecision?.assetId !== assetId,
+  );
+  let useHls = $derived(
+    featureFlagsManager.value.realtimeTranscoding && (!playOriginalVideo || directFallbackAssetId === assetId),
+  );
   let assetFileUrl = $derived.by(() => {
+    if (autoOriginalPending) return '';
     if (useHls) {
-      return getAssetHlsUrl(assetId, avcFallbackAssetId === assetId ? 'h264' : undefined);
+      return adaptiveDecision?.assetId === assetId
+        ? adaptiveDecision.url
+        : getAssetHlsUrl(assetId, avcFallbackAssetId === assetId ? 'h264' : undefined);
     }
 
     if (playOriginalVideo) {
@@ -110,57 +130,17 @@
   let rebuildCount = 0;
   let playbackAssetId: string | undefined;
   let pendingResume: (PlaybackPosition & { assetId: string }) | undefined;
+  let stopAdaptivePlayback: (() => void) | undefined;
 
   const MAX_REBUILDS = 1;
   const SESSION_ID_REGEX = /\/video\/stream\/([0-9a-f-]{36})\//;
 
-  // hls.js can abandon fetching an in-flight fragment if it thinks it'll take too long, in which case
-  // it emergency switches to a different variant. This extends the delay even further due to
-  // cold starting another transcode, so let the fragment finish and have steady ABR decide the next level.
-  //
-  // It can also emergency switch between fragments: while a switch's first segment is still loading,
-  // it can run out of buffer and drop to a lower level for just one segment before continuing at the switched quality.
-  // This can cause multiple redundant transcoding restarts when it occurs.
-  // Hold the committed level until its first fragment lands, then resume normal ABR.
-  class NoAbandonAbrController extends AbrController {
-    private switchTarget = -1;
-
-    protected override onFragLoading(_event: Events.FRAG_LOADING, data: FragLoadingData) {
-      if (data.frag.sn === 'initSegment') {
-        this.switchTarget = data.frag.level;
-      }
-    }
-
-    protected override onFragLoaded(event: Events.FRAG_LOADED, data: FragLoadedData) {
-      if (data.frag.sn !== 'initSegment') {
-        this.switchTarget = -1;
-      }
-      super.onFragLoaded(event, data);
-    }
-
-    override get nextAutoLevel(): number {
-      const level = super.nextAutoLevel;
-      const target = this.hls.levels[this.switchTarget];
-      // Hold the committed level, but only while hls.js still considers it healthy.
-      if (target && level < this.switchTarget && target.loadError === 0 && target.fragmentError === 0) {
-        return this.switchTarget;
-      }
-      return level;
-    }
-
-    override set nextAutoLevel(level: number) {
-      super.nextAutoLevel = level;
-    }
-  }
-
   let hlsPositionHint: { api: Hls; position: number } | undefined;
   const hlsConfig: Partial<HlsConfig> = {
-    abrController: NoAbandonAbrController,
+    ...adaptiveHlsConfig,
     highBufferWatchdogPeriod: 10,
     detectStallWithCurrentTimeMs: 10_000,
     maxBufferHole: 0.5,
-    maxBufferLength: 30,
-    maxMaxBufferLength: 60,
     fragLoadPolicy: {
       default: {
         maxTimeToFirstByteMs: 30_000,
@@ -179,7 +159,9 @@
       }
       xhr.open('GET', authenticatedUrl.href);
       const api = isHlsElement(videoPlayer) ? videoPlayer.api : undefined;
-      const frag = api?.inFlightFragments?.main.frag;
+      const frag = [api?.inFlightFragments?.main?.frag, api?.inFlightFragments?.audio?.frag].find(
+        (fragment) => fragment?.initSegment?.url === url,
+      );
       // During init loading hls.js exposes the associated media fragment. Its
       // sequence number is exact; a server guess can be far ahead after a seek
       // or an immediate quality switch with a full playback buffer.
@@ -187,8 +169,12 @@
         xhr.setRequestHeader('x-immich-hls-msn', String(frag.sn));
       }
       const hint = hlsPositionHint;
-      if (hint && hint.api === api && authenticatedUrl.pathname.endsWith('/playlist.m3u8') &&
-        authenticatedUrl.pathname.match(SESSION_ID_REGEX)?.[1] === activeSession?.id) {
+      if (
+        hint &&
+        hint.api === api &&
+        authenticatedUrl.pathname.endsWith('/playlist.m3u8') &&
+        authenticatedUrl.pathname.match(SESSION_ID_REGEX)?.[1] === activeSession?.id
+      ) {
         xhr.setRequestHeader('x-immich-hls-pos', String(hint.position));
         hlsPositionHint = undefined;
       }
@@ -196,6 +182,8 @@
   };
 
   const releaseSession = () => {
+    stopAdaptivePlayback?.();
+    stopAdaptivePlayback = undefined;
     hlsPositionHint = undefined;
     const session = activeSession;
     if (!session) {
@@ -243,6 +231,7 @@
     // Changing the source releases the old session and creates an AVC-only one.
     // The server filters the master too, which also covers native HLS players.
     avcFallbackAssetId = id;
+    adaptiveDecision = undefined;
     return true;
   };
 
@@ -252,8 +241,10 @@
       return undefined;
     }
     const index = level ?? (api.currentLevel >= 0 ? api.currentLevel : api.loadLevel);
-    return api.levels[index]?.videoCodec ??
-      (api.levels.length === 0 || api.levels.some((item) => isHevcCodec(item.videoCodec)) ? undefined : 'avc1');
+    return (
+      api.levels[index]?.videoCodec ??
+      (api.levels.length === 0 || api.levels.some((item) => isHevcCodec(item.videoCodec)) ? undefined : 'avc1')
+    );
   };
 
   const handleMediaError = (event: Event) => {
@@ -262,17 +253,20 @@
       if (isMediaDecodeFailure(el.error?.code)) retryWithHls(el, assetId);
       return;
     }
-    if (
-      isMediaDecodeFailure(el.error?.code) &&
-      (!el.api || isHevcCodec(currentVideoCodec(el)))
-    ) {
+    if (isMediaDecodeFailure(el.error?.code) && (!el.api || isHevcCodec(currentVideoCodec(el)))) {
       retryWithAvc(el, assetId);
     }
   };
 
   const retryWithHls = (el: HTMLVideoElement, id: string) => {
-    if (videoPlayer !== el || assetId !== id || !featureFlagsManager.value.realtimeTranscoding ||
-      !playOriginalVideo || directFallbackAssetId === id) return;
+    if (
+      videoPlayer !== el ||
+      assetId !== id ||
+      !featureFlagsManager.value.realtimeTranscoding ||
+      !playOriginalVideo ||
+      directFallbackAssetId === id
+    )
+      return;
     rememberPlayback(el, id);
     isLoading = true;
     directFallbackAssetId = id;
@@ -300,18 +294,6 @@
     }
     if (resumeTime !== undefined) hlsPositionHint = { api, position: resumeTime };
 
-    // This is a hack to make the rendition menu use `api.currentLevel` instead of `api.nextLevel`.
-    // `api.nextLevel` makes the player request the next segment followed by the current segment.
-    // That backward request causes the server to restart transcoding for no reason.
-    Object.defineProperty(api, 'nextLevel', {
-      configurable: true,
-      get: () => api.currentLevel,
-      set: (level: number) => {
-        hlsPositionHint = { api, position: playbackPosition(el).currentTime };
-        api.currentLevel = level;
-      },
-    });
-
     // eslint-disable-next-line @typescript-eslint/no-misused-promises
     api.on(Hls.Events.MANIFEST_PARSED, async () => {
       if (el !== videoPlayer || el.api !== api || playbackAssetId !== assetId) {
@@ -323,6 +305,9 @@
       if (id) {
         activeSession = { assetId, id };
       }
+      // hls-video-element assigns menu IDs before the capability filter removes
+      // levels. Retain those IDs rather than guessing from the filtered ladder.
+      originalRenditionIds = api.levels.flatMap((level, index) => (isOriginalLevel(level) ? [String(index)] : []));
 
       if (avcFallbackAssetId === assetId) {
         for (let i = api.levels.length - 1; i >= 0; i--) {
@@ -349,6 +334,16 @@
         }
       }
 
+      stopAdaptivePlayback?.();
+      stopAdaptivePlayback = attachAdaptivePlayback(
+        api,
+        el,
+        assetFileUrl,
+        adaptiveDecision?.assetId === assetId ? adaptiveDecision.bandwidth : 0,
+        (text) => {
+          if (el === videoPlayer && el.api === api) playbackStatus = text;
+        },
+      );
       api.startLoad(resumeTime);
     });
 
@@ -358,10 +353,14 @@
       if (el !== videoPlayer || el.api !== api || playbackAssetId !== assetId) {
         return;
       }
-      if (
-        isHevcDecodeFailure(data, currentVideoCodec(el, data.frag?.level)) &&
-        retryWithAvc(el, assetId)
-      ) {
+      const failedLevel = data.frag?.level ?? (api.currentLevel >= 0 ? api.currentLevel : api.loadLevel);
+      if (data.fatal && isOriginalLevel(api.levels[failedLevel]) && copyFallbackAssetId !== assetId) {
+        rememberPlayback(el, assetId);
+        copyFallbackAssetId = assetId;
+        adaptiveDecision = undefined;
+        return;
+      }
+      if (isHevcDecodeFailure(data, currentVideoCodec(el, data.frag?.level)) && retryWithAvc(el, assetId)) {
         return;
       }
       // 404 on a fragment can mean the server-side session has expired. Refetch
@@ -397,12 +396,22 @@
       // A fresh explicit Original selection may retry after an earlier fallback.
       if (playOriginalVideo) directFallbackAssetId = undefined;
     }
-    if (previous && previous.assetId !== assetId) directFallbackAssetId = undefined;
+    if (previous && previous.assetId !== assetId) {
+      directFallbackAssetId = undefined;
+      copyFallbackAssetId = undefined;
+    }
   });
 
   $effect(() => {
     // reactive on `assetFileUrl` changes
     hasLoadedMetadata = false;
+    playbackStatus = '';
+    if (videoPlayer && !assetFileUrl) {
+      // Avoid continuing the previous asset while an Auto decision is pending.
+      videoPlayer.pause();
+      videoPlayer.src = '';
+      releaseSession();
+    }
     if (videoPlayer && assetFileUrl) {
       if (playbackAssetId !== assetId) {
         playbackAssetId = assetId;
@@ -423,9 +432,10 @@
         videoPlayer.src = assetFileUrl;
         const el = videoPlayer;
         const id = assetId;
-        const stopMonitor = featureFlagsManager.value.realtimeTranscoding && playOriginalVideo
-          ? monitorDirectPlayback(el, () => retryWithHls(el, id))
-          : undefined;
+        const stopMonitor =
+          featureFlagsManager.value.realtimeTranscoding && playOriginalVideo
+            ? monitorDirectPlayback(el, () => retryWithHls(el, id))
+            : undefined;
         return () => {
           stopMonitor?.();
           releaseSession();
@@ -434,6 +444,49 @@
     }
     return releaseSession;
   });
+
+  // Probe in parallel with indexed source metadata, before loading any rendition.
+  // Cancellation prevents late results from reviving an old asset or copy mode.
+  $effect(() => {
+    const id = assetId;
+    const avc = avcFallbackAssetId === id;
+    const copy = automaticOriginal && copyFallbackAssetId !== id;
+    if (
+      !featureFlagsManager.value.realtimeTranscoding ||
+      (playOriginalVideo && directFallbackAssetId !== id) ||
+      typeof document === 'undefined'
+    )
+      return;
+    const controller = new AbortController();
+    void prepareAdaptivePlayback({
+      masterUrl: getAssetHlsUrl(id, avc ? 'h264' : undefined),
+      authParams: authManager.params,
+      signal: controller.signal,
+      allowOriginal: copy,
+    }).then((decision) => {
+      if (!controller.signal.aborted && assetId === id) adaptiveDecision = { assetId: id, ...decision };
+    });
+    return () => controller.abort();
+  });
+
+  const setAutomaticOriginal = (enabled: boolean) => {
+    if (enabled === automaticOriginal) return;
+    if (videoPlayer && assetFileUrl) rememberPlayback(videoPlayer, assetId);
+    automaticOriginal = enabled;
+    adaptiveDecision = undefined;
+    copyFallbackAssetId = undefined;
+  };
+
+  // media-chrome handles checkable menu-item clicks itself and dispatches a
+  // `change` event from the parent menu. A click listener on the item does
+  // not reliably fire or update its Svelte state.
+  const handleOriginalMenuChange = (event: Event) => {
+    if (event.target !== event.currentTarget) return;
+    const menu = event.currentTarget as HTMLElement;
+    const checkbox = menu.querySelector('media-settings-menu-item[type="checkbox"][value="auto-original"]');
+    if (!checkbox) return;
+    setAutomaticOriginal(checkbox.getAttribute('aria-checked') === 'true');
+  };
 
   const onPagehide = (event: PageTransitionEvent) => {
     if (!event.persisted) {
@@ -508,8 +561,17 @@
     if (event.key !== ' ') return;
     // Space activates the focused control. Do not also let the body shortcut
     // toggle video playback; controls inside shadow roots appear in this path.
-    if (event.composedPath().some((target) => target instanceof HTMLElement && target !== event.currentTarget &&
-      (target.tagName.startsWith('MEDIA-') || target.matches('button, input, select, textarea, [role="button"], [role="slider"], [role^="menuitem"]')))) {
+    if (
+      event
+        .composedPath()
+        .some(
+          (target) =>
+            target instanceof HTMLElement &&
+            target !== event.currentTarget &&
+            (target.tagName.startsWith('MEDIA-') ||
+              target.matches('button, input, select, textarea, [role="button"], [role="slider"], [role^="menuitem"]')),
+        )
+    ) {
       event.stopPropagation();
     }
   };
@@ -523,8 +585,14 @@
       // old media and then clear its store. Rebind after that mutation batch,
       // preserving this controller (and its fullscreen element and controls).
       queueMicrotask(() => {
-        if (disposed || version !== generation || !next || !controller.isConnected ||
-          controller.querySelector(':scope > [slot=media]') !== next) return;
+        if (
+          disposed ||
+          version !== generation ||
+          !next ||
+          !controller.isConnected ||
+          controller.querySelector(':scope > [slot=media]') !== next
+        )
+          return;
         (controller as HTMLElement & { mediaSetCallback: (el: HTMLVideoElement) => void }).mediaSetCallback(next);
       });
     };
@@ -535,6 +603,34 @@
       destroy: () => {
         disposed = true;
         controller.removeEventListener('keydown', handleControlKeydown);
+      },
+    };
+  };
+
+  type Rendition = { id: string; width: number; height: number; original?: boolean };
+  const originalRenditionLabels = (element: HTMLElement, ids: string[]) => {
+    const menu = element as HTMLElement & {
+      mediaRenditionList: Rendition[];
+      formatRendition: (rendition: Rendition, options?: unknown) => string;
+    };
+    const format = menu.formatRendition;
+    let currentIds = ids;
+    menu.formatRendition = (rendition, options) =>
+      currentIds.includes(rendition.id)
+        ? `Original (${Math.min(rendition.width, rendition.height)}p)`
+        : format.call(menu, rendition, options);
+    const update = (values: string[]) => {
+      currentIds = values;
+      menu.mediaRenditionList = menu.mediaRenditionList.map((rendition) => ({
+        ...rendition,
+        original: values.includes(rendition.id),
+      }));
+    };
+    update(ids);
+    return {
+      update,
+      destroy: () => {
+        menu.formatRendition = format;
       },
     };
   };
@@ -645,7 +741,12 @@
         {/if}
 
         {#if extendedControls}
-          <media-settings-menu hidden anchor="auto" class="min-w-3xs rounded-xl border border-light-300 shadow-sm">
+          <media-settings-menu
+            hidden
+            anchor="auto"
+            class="min-w-3xs rounded-xl border border-light-300 shadow-sm"
+            onchange={handleOriginalMenuChange}
+          >
             <Icon slot="checked-indicator" icon={mdiCheck} class="m-2" />
             <media-settings-menu-item class="mx-1 rounded-lg p-1 ps-2">
               {$t('media_chrome.playback_rate')}
@@ -655,11 +756,22 @@
                 <span slot="title">{$t('media_chrome.playback_rate')}</span>
               </media-playback-rate-menu>
             </media-settings-menu-item>
+            {#if featureFlagsManager.value.realtimeTranscoding && !playOriginalVideo}
+              <media-settings-menu-item
+                class="mx-1 rounded-lg p-1 ps-2"
+                type="checkbox"
+                value="auto-original"
+                checked={automaticOriginal}
+                aria-checked={automaticOriginal}
+              >
+                Original in Auto ({automaticOriginal ? 'on' : 'off'})
+              </media-settings-menu-item>
+            {/if}
             {#if useHls}
               <media-settings-menu-item class="mx-1 rounded-lg p-1 ps-2">
                 {$t('video_quality')}
                 <Icon slot="suffix" icon={mdiChevronRight} class="m-2" />
-                <media-rendition-menu slot="submenu" hidden>
+                <media-rendition-menu slot="submenu" hidden use:originalRenditionLabels={originalRenditionIds}>
                   <Icon slot="back-icon" icon={mdiChevronLeft} class="m-2" />
                   <span slot="title">{$t('video_quality')}</span>
                 </media-rendition-menu>
@@ -675,6 +787,9 @@
               <Icon slot="pause" icon={mdiPause} />
             </media-play-button>
             <media-time-display showduration class="rounded-lg p-2 outline-none"></media-time-display>
+            {#if useHls && playbackStatus}
+              <span class="self-center text-xs text-white/80" aria-live="polite">{playbackStatus}</span>
+            {/if}
 
             <span class="grow"></span>
 

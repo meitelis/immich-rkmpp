@@ -1,3 +1,53 @@
+# Memories strategy port — 10 November 2026
+
+Development candidate: rkmpp-3.3.5-r4-memories. This changes the server and
+browser pipeline; the historical R2/R3 results below are not validation of it.
+
+Local Windows checks:
+
+- Focused source/policy/lifecycle/controller regressions pass, including the
+  actual hls.js 1.7.3 startup controller and subsequent native downshifts.
+  There are 107 passing source checks; three real-FFmpeg cases are opt-in and
+  were also run separately with the binaries and compiled media module below.
+- Real FFmpeg H.264 B-frame and HEVC open-GOP remuxes pass full/cold fragment
+  decode, exact raw MP4 presentation ranges and original video payload hashes.
+- Real shared AAC passes padding through a short source's tail and cold seeks.
+- Server TypeScript, Svelte diagnostics and browser TypeScript pass.
+- The server production build passes.
+- The web production build passes (existing upstream chunk/wasm warnings).
+- The upstream targeted server suite passes 95/98 locally; three expected
+  Linux-path command snapshots differ only by Windows path separators. The
+  ARM64/Linux CI run is authoritative for those three snapshots.
+
+GitHub Actions builds the pinned ARM64 server and browser image, runs the full
+targeted upstream server suites and real fragment checks with the candidate's
+FFmpeg. Its exact revision/result must be checked on the PR.
+
+The first ARM64 candidate built successfully and passed all 98 targeted server
+tests. Runtime fragment checks caught the bundled FFmpeg's missing
+readrate_catchup option. The port uses its supported readrate 1 / initial burst
+18 options and does not change the pinned FFmpeg or runtime dependencies.
+
+The user ran the SDR hardware matrix on commit 85d2f745: 34/34 passed,
+including paced/source-grid/cold-seek cases. Mali/HDR was not exercised.
+The user then deployed that candidate; live browser inspection found an empty
+media source and `Failed to construct 'URL': Invalid URL` before HLS startup.
+The new preparation helper incorrectly required an absolute master URL, while
+Immich's production URL builder normally returns `/api/assets/...`.
+
+The fix resolves both preparation and probe/metadata endpoint URLs against the
+browser location. Three regressions use the production URL-builder functions
+with root-relative, subpath and absolute API bases; the two relative cases fail
+before the fix and pass after it. Authentication and codec query parameters
+are checked. No server, FFmpeg or hardware behavior changes in this fix.
+
+Still required: repeat actual-browser startup after deploying the URL fix, then
+fast/slow/network-change/quality-switch/seek/pause/EOF acceptance, with audible
+continuity and A/V drift checks. The fix has not been deployed by the agent.
+See [the deployment gate](docs/MEMORIES_PLAYBACK.md).
+
+---
+
 # Immich RKMPP verification
 
 Review date: 4 November 2026. Target: Immich 3.3.5 on RK3588, with the source and runtime pinned in `upstream.json`.

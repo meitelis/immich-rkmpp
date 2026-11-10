@@ -5,6 +5,9 @@ import { ImmichHeader } from 'src/enum.js';
 const HlsMainPlaylistQuerySchema = z.object({
   // Restricts the advertised ladder without enabling a server-disabled codec.
   videoCodec: z.enum(['h264', 'hevc']).optional(),
+  strategy: z.literal('memories').optional(),
+  // Explicit MSE capability; the server still validates the indexed source.
+  copy: z.enum(['avc', 'hevc', 'hevc10']).optional(),
 });
 
 export class HlsMainPlaylistQueryDto extends createZodDto(HlsMainPlaylistQuerySchema) {}

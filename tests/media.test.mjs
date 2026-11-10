@@ -87,6 +87,28 @@ const handler = (mali, overrides = {}, tune) =>
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const argument = (args, name) => args[args.indexOf(name) + 1];
 
+test('Memories hardware commands keep video on its source grid without muxed audio or process suspension', () => {
+  const args = handler(false, { gopSize: 330, maxBitrate: '1200k' }, { strictGop: true, lowLatency: true }).getHlsCommand({
+    inputPath: '/fixture.mp4', packetCount: 300, timeBase: 1, totalDuration: 10,
+    segmentDuration: 2, initFilename: 'init.mp4', segmentFilename: '/hls/seg_%d.m4s',
+    startSegment: 1, seekSeconds: 0.00001, playlistFilename: '/hls/playlist.m3u8', target: 'ALL',
+    playback: { starts: [0, 2.04, 4.08, 6.12, 8.16], start: 2.04, duration: 10 },
+  }, video({ colorTransfer: 1 }));
+  assert.equal(argument(args, '-readrate_initial_burst'), '18');
+  assert.equal(args.includes('-readrate_catchup'), false, 'the pinned Immich FFmpeg does not support this flag');
+  assert.equal(argument(args, '-fps_mode'), 'passthrough');
+  assert.ok(args.includes('-noaccurate_seek'));
+  assert.ok(args.includes('-an'));
+  assert.equal(argument(args, '-bf'), '0');
+  assert.equal(argument(args, '-flags:v'), '+low_delay');
+  assert.equal(argument(args, '-force_key_frames'), '2.039999000,4.079999000,6.119999000,8.159999000');
+  assert.match(argument(args, '-vf'), /^trim=start=2.039999000,/);
+  assert.equal(argument(args, '-hls_time'), '0.00001');
+  assert.equal(argument(args, '-rc_mode'), 'VBR');
+  assert.equal(argument(args, '-maxrate'), '1200k');
+  assert.equal(argument(args, '-bufsize'), '2400k');
+});
+
 test('480p advertised dimensions match FFmpeg nearest-even scaling in both orientations', () => {
   assert.deepEqual(plain(getOutputSize(video({ width: 3840, height: 2160 }), 480)), { width: 854, height: 480 });
   assert.deepEqual(plain(getOutputSize(video({ width: 2160, height: 3840 }), 480)), { width: 480, height: 854 });

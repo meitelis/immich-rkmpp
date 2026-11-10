@@ -32,3 +32,13 @@ jobs:
           PY
       - name: Pinned server and browser build
         run: sh scripts/build.sh --source-dir "$RUNNER_TEMP/immich-rkmpp-source"
+      - name: Real fragment and shared-audio checks with the candidate FFmpeg
+        run: |
+          mkdir -p "$RUNNER_TEMP/playback-fragments"
+          docker run --rm --entrypoint node \
+            -v "$PWD:/source:ro" -v "$RUNNER_TEMP/playback-fragments:/scratch" -w /source \
+            -e IMMICH_FFMPEG_BIN=ffmpeg -e IMMICH_FFPROBE_BIN=ffprobe \
+            -e IMMICH_PLAYBACK_SCRATCH=/scratch \
+            -e IMMICH_COMPILED_MEDIA=/usr/src/app/server/dist/utils/media.js \
+            local/immich-server:rkmpp-3.3.5-r4-memories \
+            --test tests/playback-fragments.test.mjs

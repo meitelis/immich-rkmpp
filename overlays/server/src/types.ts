@@ -169,6 +169,8 @@ export interface VideoTuning {
 }
 
 export interface HlsCommandOptions {
+  /** Web-only Memories strategy: independent audio, optional source video grid. */
+  playback?: { starts?: number[]; start: number; duration: number };
   initFilename: string;
   inputPath: string;
   packetCount: number;

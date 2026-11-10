@@ -237,7 +237,7 @@ export function attachAdaptivePlayback(
   hls.startLevel = -1;
   hls.loadLevel = -1;
   hls.bandwidthEstimate = safeEstimate(initialBandwidth);
-  const buffered = (_event: unknown, data: FragBufferedData) => {
+  const buffered = (_: unknown, data: FragBufferedData) => {
     if (data.frag.type !== 'main') return;
     const bps = transferBandwidth(data.stats);
     if (bps > 0) samples = [...samples.slice(-3), bps];

@@ -1,28 +1,29 @@
 <script lang="ts">
-  import FaceEditor from '$lib/components/asset-viewer/face-editor/FaceEditor.svelte';
-  import VideoRemoteViewer from '$lib/components/asset-viewer/VideoRemoteViewer.svelte';
-  import { assetViewerFadeDuration } from '$lib/constants';
-  import { assetViewerManager } from '$lib/managers/asset-viewer-manager.svelte';
-  import { castManager } from '$lib/managers/cast-manager.svelte';
-  import { featureFlagsManager } from '$lib/managers/feature-flags-manager.svelte';
-  import { authManager } from '$lib/managers/auth-manager.svelte';
-  import { mediaCapabilitiesManager } from '$lib/managers/media-capabilities-manager.svelte';
-  import { autoPlayVideo, lang, loopVideo as loopVideoPreference } from '$lib/stores/preferences.store';
-  import { getAssetHlsSessionUrl, getAssetHlsUrl, getAssetMediaUrl, getAssetPlaybackUrl } from '$lib/utils';
-  import { monitorDirectPlayback } from '$lib/utils/direct-playback';
+  import FaceEditor from '#lib/components/asset-viewer/face-editor/FaceEditor.svelte';
+  import VideoRemoteViewer from '#lib/components/asset-viewer/VideoRemoteViewer.svelte';
+  import { assetViewerFadeDuration } from '#lib/constants.ts';
+  import { assetViewerManager } from '#lib/managers/asset-viewer-manager.svelte.ts';
+  import { castManager } from '#lib/managers/cast-manager.svelte.ts';
+  import { authManager } from '#lib/managers/auth-manager.svelte.ts';
+  import { mediaCapabilitiesManager } from '#lib/managers/media-capabilities-manager.svelte.ts';
+  import { createPreloadedQuery } from '#lib/queries/client.ts';
+  import { getPublicConfigQuery } from '#lib/queries/config-public.query.ts';
+  import { autoPlayVideo, lang, loopVideo as loopVideoPreference } from '#lib/stores/preferences.store.ts';
+  import { getAssetHlsSessionUrl, getAssetHlsUrl, getAssetMediaUrl, getAssetPlaybackUrl } from '#lib/utils.ts';
+  import { monitorDirectPlayback } from '#lib/utils/direct-playback.ts';
   import {
     adaptiveHlsConfig,
     attachAdaptivePlayback,
     isOriginalLevel,
     prepareAdaptivePlayback,
-  } from '$lib/utils/adaptive-playback';
+  } from '#lib/utils/adaptive-playback.ts';
   import {
     isHevcCodec,
     isHevcDecodeFailure,
     isMediaDecodeFailure,
     playbackPosition,
     type PlaybackPosition,
-  } from '$lib/utils/video-codec';
+  } from '#lib/utils/video-codec.ts';
   import { AssetMediaSize, type AssetResponseDto } from '@immich/sdk';
   import { Icon, LoadingSpinner, shortcuts } from '@immich/ui';
   import {
@@ -60,6 +61,9 @@
   import { fade } from 'svelte/transition';
   import './immich-time-range';
 
+  const query = createPreloadedQuery(getPublicConfigQuery);
+  const publicConfig = $derived(query.data);
+
   interface Props {
     asset: AssetResponseDto;
     assetId: string;
@@ -96,18 +100,17 @@
   let pausedReloadAssetId: string | undefined = $state();
   // Auto keeps copied Original and encoded renditions inside one HLS player.
   // Explicit Play original remains a direct-file override.
-  let automaticOriginal = $state(true);
   let copyFallbackAssetId: string | undefined = $state();
   let adaptiveDecision: { assetId: string; url: string; bandwidth: number } | undefined = $state();
   let playbackStatus = $state('');
   let originalRenditionIds: string[] = $state([]);
   let autoOriginalPending = $derived(
-    featureFlagsManager.value.realtimeTranscoding &&
+    publicConfig.ffmpeg.realtime.enabled &&
       (!playOriginalVideo || directFallbackAssetId === assetId) &&
       adaptiveDecision?.assetId !== assetId,
   );
   let useHls = $derived(
-    featureFlagsManager.value.realtimeTranscoding && (!playOriginalVideo || directFallbackAssetId === assetId),
+    publicConfig.ffmpeg.realtime.enabled && (!playOriginalVideo || directFallbackAssetId === assetId),
   );
   let assetFileUrl = $derived.by(() => {
     if (autoOriginalPending) return '';
@@ -262,7 +265,7 @@
     if (
       videoPlayer !== el ||
       assetId !== id ||
-      !featureFlagsManager.value.realtimeTranscoding ||
+      !publicConfig.ffmpeg.realtime.enabled ||
       !playOriginalVideo ||
       directFallbackAssetId === id
     )
@@ -433,7 +436,7 @@
         const el = videoPlayer;
         const id = assetId;
         const stopMonitor =
-          featureFlagsManager.value.realtimeTranscoding && playOriginalVideo
+          publicConfig.ffmpeg.realtime.enabled && playOriginalVideo
             ? monitorDirectPlayback(el, () => retryWithHls(el, id))
             : undefined;
         return () => {
@@ -450,9 +453,9 @@
   $effect(() => {
     const id = assetId;
     const avc = avcFallbackAssetId === id;
-    const copy = automaticOriginal && copyFallbackAssetId !== id;
+    const copy = copyFallbackAssetId !== id;
     if (
-      !featureFlagsManager.value.realtimeTranscoding ||
+      !publicConfig.ffmpeg.realtime.enabled ||
       (playOriginalVideo && directFallbackAssetId !== id) ||
       typeof document === 'undefined'
     )
@@ -468,25 +471,6 @@
     });
     return () => controller.abort();
   });
-
-  const setAutomaticOriginal = (enabled: boolean) => {
-    if (enabled === automaticOriginal) return;
-    if (videoPlayer && assetFileUrl) rememberPlayback(videoPlayer, assetId);
-    automaticOriginal = enabled;
-    adaptiveDecision = undefined;
-    copyFallbackAssetId = undefined;
-  };
-
-  // media-chrome handles checkable menu-item clicks itself and dispatches a
-  // `change` event from the parent menu. A click listener on the item does
-  // not reliably fire or update its Svelte state.
-  const handleOriginalMenuChange = (event: Event) => {
-    if (event.target !== event.currentTarget) return;
-    const menu = event.currentTarget as HTMLElement;
-    const checkbox = menu.querySelector('media-settings-menu-item[type="checkbox"][value="auto-original"]');
-    if (!checkbox) return;
-    setAutomaticOriginal(checkbox.getAttribute('aria-checked') === 'true');
-  };
 
   const onPagehide = (event: PageTransitionEvent) => {
     if (!event.persisted) {
@@ -607,18 +591,26 @@
     };
   };
 
-  type Rendition = { id: string; width: number; height: number; original?: boolean };
+  type Rendition = { id: string; width: number; height: number; bitrate?: number; original?: boolean };
   const originalRenditionLabels = (element: HTMLElement, ids: string[]) => {
     const menu = element as HTMLElement & {
       mediaRenditionList: Rendition[];
-      formatRendition: (rendition: Rendition, options?: unknown) => string;
+      formatRendition: (rendition: Rendition, options?: { showBitrate?: boolean }) => string;
     };
     const format = menu.formatRendition;
     let currentIds = ids;
-    menu.formatRendition = (rendition, options) =>
-      currentIds.includes(rendition.id)
+    menu.formatRendition = (rendition) => {
+      const label = currentIds.includes(rendition.id)
         ? `Original (${Math.min(rendition.width, rendition.height)}p)`
-        : format.call(menu, rendition, options);
+        : format.call(menu, rendition, { showBitrate: false });
+      const bitrate = rendition.bitrate;
+      if (!bitrate || !Number.isFinite(bitrate) || bitrate <= 0) return label;
+      const bandwidth =
+        bitrate < 1_000_000
+          ? `${Math.round(bitrate / 1000)} kbps`
+          : `${(bitrate / 1_000_000).toFixed(1).replace(/\.0$/, '')} Mbps`;
+      return `${label} · ${bandwidth}`;
+    };
     const update = (values: string[]) => {
       currentIds = values;
       menu.mediaRenditionList = menu.mediaRenditionList.map((rendition) => ({
@@ -745,7 +737,6 @@
             hidden
             anchor="auto"
             class="min-w-3xs rounded-xl border border-light-300 shadow-sm"
-            onchange={handleOriginalMenuChange}
           >
             <Icon slot="checked-indicator" icon={mdiCheck} class="m-2" />
             <media-settings-menu-item class="mx-1 rounded-lg p-1 ps-2">
@@ -756,17 +747,6 @@
                 <span slot="title">{$t('media_chrome.playback_rate')}</span>
               </media-playback-rate-menu>
             </media-settings-menu-item>
-            {#if featureFlagsManager.value.realtimeTranscoding && !playOriginalVideo}
-              <media-settings-menu-item
-                class="mx-1 rounded-lg p-1 ps-2"
-                type="checkbox"
-                value="auto-original"
-                checked={automaticOriginal}
-                aria-checked={automaticOriginal}
-              >
-                Original in Auto ({automaticOriginal ? 'on' : 'off'})
-              </media-settings-menu-item>
-            {/if}
             {#if useHls}
               <media-settings-menu-item class="mx-1 rounded-lg p-1 ps-2">
                 {$t('video_quality')}
@@ -780,7 +760,10 @@
           </media-settings-menu>
         {/if}
 
-        <div class="flex h-32 w-full flex-col justify-end bg-linear-to-b to-black/80 px-4">
+        <div class="relative isolate flex h-32 w-full flex-col justify-end px-4">
+          <div
+            class="pointer-events-none absolute inset-x-0 bottom-0 -z-10 h-48 bg-black/80 mask-smoothstep-to-top"
+          ></div>
           <media-control-bar part="bottom" class="flex h-10 w-full gap-2">
             <media-play-button class="shrink-0 rounded-full p-2 outline-none">
               <Icon slot="play" icon={mdiPlay} />
@@ -824,7 +807,12 @@
       {/if}
 
       {#if assetViewerManager.isFaceEditMode && videoPlayer && hasLoadedMetadata}
-        <FaceEditor htmlElement={videoPlayer} {containerWidth} {containerHeight} {assetId} />
+        <FaceEditor
+          htmlElement={isHlsElement(videoPlayer) ? videoPlayer.nativeEl : videoPlayer}
+          {containerWidth}
+          {containerHeight}
+          {assetId}
+        />
       {/if}
     {/if}
   </div>

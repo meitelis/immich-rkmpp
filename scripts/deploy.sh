@@ -39,7 +39,7 @@ old_version=$(docker inspect --format '{{index .Config.Labels "cc.immich-rkmpp.u
 if [ "$old_version" = '<no value>' ] || [ -z "$old_version" ]; then
     old_version=$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$engine")
 fi
-case "$old_version" in 3.3.5|v3.3.5|3.3.5-rkmpp-*) ;; *) fail "Existing server is $old_version; this package supports only 3.3.5" ;; esac
+case "$old_version" in 3.4.0|v3.4.0|3.4.0-rkmpp-*) ;; *) fail "Existing server is $old_version; upgrade to 3.4.0 with a database backup before using this same-version deployment script" ;; esac
 old_image=$(docker inspect --format '{{.Image}}' "$engine")
 mkdir -p -- "$backup_dir"
 backup_dir=$(CDPATH= cd -- "$backup_dir" && pwd -P)
@@ -64,7 +64,7 @@ print(image)
 PY
 )
 version=$(docker image inspect --format '{{index .Config.Labels "cc.immich-rkmpp.upstream-version"}}' "$image")
-[ "$version" = 3.3.5 ] || fail 'The configured image is not a built Immich RKMPP 3.3.5 release'
+[ "$version" = 3.4.0 ] || fail 'The configured image is not a built Immich RKMPP 3.4.0 release'
 [ "$(docker image inspect --format '{{.Architecture}}' "$image")" = arm64 ] || fail 'The deployment image must be built for ARM64'
 printf 'services:\n  immich-server:\n    image: "%s"\n    pull_policy: never\n' "$old_image" > "$run/rollback.image.yml"
 python3 - "$run" "$project" "$project_directory" "$old_image" "$image" "$compose_file" <<'PY'

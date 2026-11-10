@@ -27,7 +27,7 @@ await mkdir(path.dirname(target), { recursive: true });
 git(['clone', '--depth', '1', '--branch', upstream.tag, upstream.repository, target]);
 if (git(['rev-parse', 'HEAD'], target) !== upstream.commit) throw new Error('Upstream tag moved; expected pinned commit');
 const manifest = JSON.parse(await readFile(path.join(target, 'package.json'), 'utf8'));
-if (manifest.version !== upstream.version || manifest.packageManager !== 'pnpm@11.27.1') {
+if (manifest.version !== upstream.version || manifest.packageManager !== 'pnpm@12.15.0') {
   throw new Error('Unexpected upstream version or package manager');
 }
 await cp(path.join(root, 'overlays'), target, { recursive: true });

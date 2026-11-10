@@ -1,8 +1,8 @@
-FROM ghcr.io/immich-app/base-server-dev:202610211607@sha256:f99c605b44b291834cb680b80fd606f2b7c4bee5d8f9591bfdac51fdbd68c21d AS builder
+FROM ghcr.io/immich-app/base-server-dev:202610291416@sha256:5f4f9f77059e1cd0182994419a19f4ee045c3fd48e611f5e77623ed63f7aa1e4 AS builder
 ENV CI=1 \
     PNPM_HOME=/buildcache/pnpm-store \
     PATH="/buildcache/pnpm-store:$PATH"
-RUN npm install --global pnpm@11.27.1 && pnpm config set store-dir "$PNPM_HOME"
+RUN npm install --global pnpm@12.15.0 && pnpm config set store-dir "$PNPM_HOME"
 WORKDIR /usr/src/app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .pnpmfile.cjs ./
 
@@ -32,7 +32,7 @@ COPY web/package.json web/package.json
 RUN pnpm --filter immich-web install --frozen-lockfile
 COPY i18n i18n/
 COPY web web/
-ARG IMMICH_BUILD=rkmpp-3.3.5-r4-memories
+ARG IMMICH_BUILD=rkmpp-3.4.0-r4-memories
 ENV IMMICH_BUILD=${IMMICH_BUILD}
 RUN pnpm --filter immich-web exec svelte-kit sync && \
     pnpm --filter immich-web check:svelte && \
@@ -40,18 +40,18 @@ RUN pnpm --filter immich-web exec svelte-kit sync && \
     pnpm --filter immich-web build
 
 # Reuse matching runtime dependencies, FFmpeg, CLI and core plugins.
-FROM ghcr.io/immich-app/immich-server:v3.3.5@sha256:485d546a2e31d6a8b4db8423fcba5c109de8c218d93410af115fd1ccfc4352a6 AS rkmpp
+FROM ghcr.io/immich-app/immich-server:v3.4.0@sha256:7b7b575029168bfb9eb901d868ce7dbfda0d7818e78aaace29b7b8a08cd4e7d5 AS rkmpp
 COPY --from=server /usr/src/app/server/dist /usr/src/app/server/dist
 COPY --from=web /usr/src/app/web/build /build/www
 COPY LICENSE /licenses/immich-rkmpp/LICENSE
 COPY RKMPP_NOTICE /licenses/immich-rkmpp/NOTICE
 COPY RKMPP_LICENSES /licenses/immich-rkmpp/third-party
 ARG RKMPP_REVISION=local
-ARG IMMICH_BUILD=rkmpp-3.3.5-r4-memories
+ARG IMMICH_BUILD=rkmpp-3.4.0-r4-memories
 ENV IMMICH_BUILD=${IMMICH_BUILD}
 LABEL org.opencontainers.image.title="Immich RKMPP" \
-      org.opencontainers.image.version="3.3.5-rkmpp-r4-memories" \
+      org.opencontainers.image.version="3.4.0-rkmpp-r4-memories" \
       org.opencontainers.image.source="https://github.com/meitelis/immich-rkmpp" \
       org.opencontainers.image.revision="${RKMPP_REVISION}" \
-      cc.immich-rkmpp.upstream-version="3.3.5" \
-      cc.immich-rkmpp.upstream-revision="8303cb117e197c700332b33b61b45314c9cc5bb4"
+      cc.immich-rkmpp.upstream-version="3.4.0" \
+      cc.immich-rkmpp.upstream-revision="0715bcf8dab4b91118d6184479e2be2767ef8294"

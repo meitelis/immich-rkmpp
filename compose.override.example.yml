@@ -1,8 +1,8 @@
-# Merge with an existing Immich v3.3.5 stack. Retain its database, Redis,
+# Merge with an existing Immich v3.4.0 stack. Retain its database, Redis,
 # volumes, networks, machine-learning image and configuration.
 services:
   immich-server:
-    image: local/immich-server:rkmpp-3.3.5-r4-memories
+    image: local/immich-server:rkmpp-3.4.0-r4-memories
     pull_policy: never
     devices:
       - /dev/dri:/dev/dri

@@ -1,4 +1,25 @@
-# Memories strategy port — 10 November 2026
+# Immich 3.4.0 port — 10 November 2026
+
+Candidate: `local/immich-server:rkmpp-3.4.0-r4-memories`, built from the
+official 3.4.0 source and matching pinned runtime. Upstream event, image,
+public-config, import and FaceEditor changes are preserved. The quality menu
+adds advertised bitrate labels and always includes eligible Original in Auto.
+
+Local validation: 106 source/controller regressions, three real H.264/HEVC/AAC
+fragment cases, server/web TypeScript, Svelte diagnostics and both production
+builds pass. The actual Media Chrome 4.19.3 menu renders the new resolution,
+Original and bitrate labels without console errors in an isolated browser
+preview. Targeted upstream tests pass 95/98 on Windows; the remaining three
+compare Linux paths. The ARM64 CI result on the PR is authoritative.
+
+The user reports smooth playback and resolution switching on the corrected
+3.3.5 image. The 3.4.0 candidate still needs on-board and live playback checks.
+Upgrading from 3.3.5 runs upstream database migrations: back up the database and
+stack before deployment; replacing the image alone does not undo migrations.
+
+---
+
+# Memories strategy port on 3.3.5 — 10 November 2026
 
 Development candidate: rkmpp-3.3.5-r4-memories. This changes the server and
 browser pipeline; the historical R2/R3 results below are not validation of it.

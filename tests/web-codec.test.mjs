@@ -194,7 +194,8 @@ function harness({ native = false, paused = false, autoplay = true, original = f
     onMount() {}, onDestroy() {}, untrack: (callback) => callback(),
     $autoPlayVideo: autoplay,
     Hls, HTMLElement, AbrController: class {},
-    featureFlagsManager: { value: { realtimeTranscoding: true } },
+    createPreloadedQuery: () => ({ data: { ffmpeg: { realtime: { enabled: true } } } }),
+    getPublicConfigQuery: () => {},
     authManager: { params: { key: 'keep-auth' } },
     createUrl: (path, params) => {
       const url = new URL(`/api${path}`, 'https://cloud.test');
@@ -212,7 +213,7 @@ function harness({ native = false, paused = false, autoplay = true, original = f
   vm.runInContext(`${hlsUrlSource}\n${adaptiveSource}\n${componentScript}\n globalThis.harness = {
     setVideo(video) { videoPlayer = video; },
     flush() {
-      useHls = featureFlagsManager.value.realtimeTranscoding && (!playOriginalVideo || directFallbackAssetId === assetId);
+      useHls = publicConfig.ffmpeg.realtime.enabled && (!playOriginalVideo || directFallbackAssetId === assetId);
       assetFileUrl = useHls ? getAssetHlsUrl(assetId, avcFallbackAssetId === assetId ? 'h264' : undefined)
         : playOriginalVideo ? getAssetMediaUrl({ id: assetId }) : getAssetPlaybackUrl({ id: assetId });
       globalThis.flushMain();
@@ -222,15 +223,10 @@ function harness({ native = false, paused = false, autoplay = true, original = f
     mediaError(video) { handleMediaError({ currentTarget: video }); },
     changeAsset(id) { assetId = id; },
     changeOriginal(value) { playOriginalVideo = value; },
-    changeAutoFromMenu(enabled, fromNestedMenu = false) {
-      const checkbox = { getAttribute: (name) => name === 'aria-checked' ? String(enabled) : null };
-      const menu = { querySelector: (selector) => selector.includes('auto-original') ? checkbox : null };
-      handleOriginalMenuChange({ currentTarget: menu, target: fromNestedMenu ? {} : menu });
-    },
     controlKeydown(event) { handleControlKeydown(event); },
     controlShortcuts(el, media) { return controlShortcuts(el, media); },
     setupRequest(xhr, url) { hlsConfig.xhrSetup(xhr, url); },
-    state() { return { avcFallbackAssetId, directFallbackAssetId, pendingResume, rebuildCount, activeSession, automaticOriginal }; },
+    state() { return { avcFallbackAssetId, directFallbackAssetId, pendingResume, rebuildCount, activeSession }; },
   };`, context);
   context.flushMain = effects[0];
   const video = {
@@ -261,21 +257,6 @@ async function flush(h) {
   h.controls.flush();
   await Promise.resolve();
 }
-
-test('Auto original menu check and uncheck events update player state in both directions', () => {
-  // Media Chrome v4 emits a change event on the parent menu for checkable items.
-  // The Svelte component must listen there instead of relying on item click.
-  assert.match(component, /<media-settings-menu[^>]*onchange=\{handleOriginalMenuChange\}/);
-  assert.match(component, /type="checkbox"\s+value="auto-original"\s+checked=\{automaticOriginal\}/);
-  const h = harness();
-  assert.equal(h.controls.state().automaticOriginal, true);
-  h.controls.changeAutoFromMenu(false);
-  assert.equal(h.controls.state().automaticOriginal, false);
-  h.controls.changeAutoFromMenu(true);
-  assert.equal(h.controls.state().automaticOriginal, true);
-  h.controls.changeAutoFromMenu(false, true);
-  assert.equal(h.controls.state().automaticOriginal, true, 'nested rendition menu change must not alter Auto');
-});
 
 for (const paused of [false, true]) {
   test(`actual player retries HEVC once as authenticated AVC and restores ${paused ? 'paused' : 'playing'} position`, async () => {

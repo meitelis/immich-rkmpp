@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 
 const usage = `Usage: node verify-hardware.mjs --scratch /tmp/immich-rkmpp-verify [--quick] [--hdr] [--sdr10] [--small] [--audio] [--fallback] [--rotation] [--memories] [--label patched]
 
-Run inside an Immich v3.3.5 test container with the Rockchip devices exposed.
+Run inside an Immich v3.4.0 test container with the Rockchip devices exposed.
 Creates synthetic media only, serially tests all five HLS resolutions in HEVC
 and H264, then tests middle seeks at 1080p and 2160p. Every fMP4 fragment must
 start with a keyframe and pass independent strict software decoding.

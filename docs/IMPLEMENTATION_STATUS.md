@@ -1,8 +1,8 @@
 # Implementation status
 
-Updated 10 November 2026. Pinned Immich 3.3.5 remains unchanged.
+Updated 10 November 2026. Migrated to pinned Immich 3.4.0 source and runtime.
 
-The codex/memories-playback-strategy branch ports the Memories browser/server
+The codex/memories-playback-3.4 branch ports the Memories browser/server
 strategy into Immich's existing authenticated streaming/session infrastructure.
 It supersedes the separate draft direct-file Auto approach in PR #3.
 

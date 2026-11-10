@@ -1,7 +1,7 @@
 # Memories playback port
 
-Development image: `local/immich-server:rkmpp-3.3.5-r4-memories`.
-This is a coordinated server + web change on pinned Immich 3.3.5. It replaces
+Development image: `local/immich-server:rkmpp-3.4.0-r4-memories`.
+This is a coordinated server + web change on pinned Immich 3.4.0. It replaces
 the draft direct-file Auto policy with one adaptive HLS playback path.
 
 ## Playback behavior
@@ -25,6 +25,10 @@ the draft direct-file Auto policy with one adaptive HLS playback path.
 - Manual resolution changes select future fragment loads without clearing the
   playable buffer. Returning to Auto releases the manual pin. A visible change
   can take up to the retained buffer; it is not promised to be instant.
+- Quality entries show their advertised HLS bandwidth beside the resolution
+  (for example, `1080p · 4.2 Mbps`). This is nominal stream bandwidth, including
+  shared audio where advertised, rather than a live transfer-speed measurement.
+  Eligible Original is always included in Auto; no separate toggle is needed.
 - Forward buffer: 18 seconds, maximum 96 MiB; back buffer: 8 seconds. Only
   requested renditions run. Workers use FFmpeg input pacing: rate 1, initial
   burst 18 seconds. The pinned Immich FFmpeg does not support Memories' explicit
@@ -78,13 +82,16 @@ Before deploying to the main server:
    changes, strong-to-weak-to-strong networking, cold seeks, pause/resume, rapid
    asset navigation, EOF and copied-video failure recovery. Check presented
    dimensions, stalls/dropped frames, audible continuity and A/V drift.
-4. Preserve the previous image and Compose source, then use the existing guarded
-   deployment/rollback scripts. No media or database migration is required.
+4. When upgrading from 3.3.5, back up the database and save the Portainer stack
+   before deploying. Immich 3.4 includes database migrations; reverting the
+   server image alone is not a complete downgrade. Keep the machine-learning
+   image on the matching 3.4.0 release/flavor. The deployment/rollback scripts
+   are for same-version 3.4.0 image replacements only.
 
 Build from this development branch, not the README-only default branch:
 
 ```sh
-git clone --branch codex/memories-playback-strategy https://github.com/meitelis/immich-rkmpp.git
+git clone --branch codex/memories-playback-3.4 https://github.com/meitelis/immich-rkmpp.git
 cd immich-rkmpp
 sh scripts/build.sh
 ```
@@ -99,7 +106,7 @@ docker run --rm --entrypoint node \
   -e IMMICH_FFMPEG_BIN=ffmpeg -e IMMICH_FFPROBE_BIN=ffprobe \
   -e IMMICH_PLAYBACK_SCRATCH=/scratch \
   -e IMMICH_COMPILED_MEDIA=/usr/src/app/server/dist/utils/media.js \
-  local/immich-server:rkmpp-3.3.5-r4-memories \
+  local/immich-server:rkmpp-3.4.0-r4-memories \
   --test tests/playback-fragments.test.mjs
 ```
 

@@ -40,5 +40,5 @@ jobs:
             -e IMMICH_FFMPEG_BIN=ffmpeg -e IMMICH_FFPROBE_BIN=ffprobe \
             -e IMMICH_PLAYBACK_SCRATCH=/scratch \
             -e IMMICH_COMPILED_MEDIA=/usr/src/app/server/dist/utils/media.js \
-            local/immich-server:rkmpp-3.3.5-r4-memories \
+            local/immich-server:rkmpp-3.4.0-r4-memories \
             --test tests/playback-fragments.test.mjs

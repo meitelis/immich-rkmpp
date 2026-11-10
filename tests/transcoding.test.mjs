@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import test from 'node:test';
+import * as playback from '../overlays/server/src/utils/hls-playback.ts';
 
 // Run the actual lifecycle service with deferred repositories and fake processes.
 // Point IMMICH_TRANSCODING_SOURCE at upstream to reproduce the regressions.
@@ -16,6 +17,7 @@ const source = readFileSync(sourcePath, 'utf8')
   .replace(/^import[\s\S]*?from\s+['"][^'"]+['"];\s*/gm, '')
   .replace(/^\s*@(?:Injectable|OnEvent|OnJob)\([^\n]*\)\s*$/gm, '');
 const context = vm.createContext({
+  ...playback,
   join,
   BaseService: class {},
   StorageCore: { getHlsVariantFolder: () => '/fixture/hls/variant', getHlsSessionFolder: () => '/fixture/hls' },
@@ -50,7 +52,7 @@ const metadata = {
 const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 const deferred = () => Promise.withResolvers();
 
-async function setup({ deferConfig = false, onSpawn } = {}) {
+async function setup({ deferConfig = false, onSpawn, playback } = {}) {
   const sut = new context.Service();
   const metadataRequests = [];
   const configRequests = [];
@@ -104,7 +106,7 @@ async function setup({ deferConfig = false, onSpawn } = {}) {
       return process;
     },
   };
-  await sut.onSessionRequest({ sessionId: 'session', assetId: 'asset', ownerId: 'owner' });
+  await sut.onSessionRequest({ sessionId: 'session', assetId: 'asset', ownerId: 'owner', playback });
   const start = (variantIndex = 0, segmentIndex = 0) => sut.onSegmentRequest({
     sessionId: 'session', assetId: 'asset', variantIndex, segmentIndex,
   });
@@ -135,6 +137,50 @@ test('AAC compatibility analysis is shared by overlapping quality starts and sel
   h.metadataRequests[2].resolve({ ...metadata, audioStream: storedAudio });
   await third;
   assert.equal(h.audioRequests.length, 1, 'Later quality changes reuse verified audio metadata');
+});
+
+const playbackPlan = { segments: [{ start: 0, duration: 2 }, { start: 2, duration: 2 }],
+  audio: true, duration: 4, original: { codec: 'avc1.640028', bitrate: 4_000_000 }, bitrates: { 0: 1_000_000, 1: 2_000_000 } };
+const playbackMetadata = { ...metadata, videoStream: { timeBase: 1, index: 0, width: 1920, height: 1080, codecName: 'h264' }, audioStream: storedAudio };
+
+test('Memories video quality switches retain the same independent audio worker', async () => {
+  const h = await setup({ playback: playbackPlan });
+  const first = h.start(0); const audio = h.start(3);
+  await flush();
+  for (const request of h.metadataRequests) request.resolve(playbackMetadata);
+  await Promise.all([first, audio]);
+  assert.equal(h.processes.length, 2);
+  const audioProcess = h.processes[1];
+  const switchVideo = h.start(1, 1);
+  await flush(); h.metadataRequests[2].resolve(playbackMetadata); await switchVideo;
+  assert.deepEqual(audioProcess.signals, [], 'video selection must not kill or restart shared audio');
+  assert.equal(h.processes.length, 3);
+  const session = h.sut.sessions.get('session');
+  session.lastCompletedSegment = 100;
+  await h.sut.onHeartbeat({ sessionId: 'session', variantIndex: 1, segmentIndex: 1 });
+  assert.deepEqual(h.processes[2].signals, [], 'paced RKMPP must not receive SIGSTOP even with a full buffer');
+  await h.sut.onSessionEnd({ sessionId: 'session' });
+  assert.deepEqual(audioProcess.signals, ['SIGKILL']);
+  assert.deepEqual(h.processes[2].signals, ['SIGKILL']);
+});
+
+test('Original requests remux video without opening a hardware encoder or a duplicate audio encoder', async () => {
+  const h = await setup({ playback: playbackPlan });
+  const start = h.start(2);
+  await flush(); h.metadataRequests[0].resolve(playbackMetadata); await start;
+  assert.equal(h.processes.length, 1);
+  assert.equal(h.commands[0][h.commands[0].indexOf('-c:v') + 1], 'copy');
+  assert.ok(h.commands[0].includes('-an'));
+  assert.equal(h.audioRequests.length, 0);
+});
+
+test('closing while shared audio starts cancels both workers and their pending metadata', async () => {
+  const h = await setup({ playback: playbackPlan });
+  const first = h.start(0); const audio = h.start(3);
+  await flush(); await h.sut.onSessionEnd({ sessionId: 'session' });
+  for (const request of h.metadataRequests) request.resolve(playbackMetadata);
+  await Promise.all([first, audio]);
+  assert.equal(h.processes.length, 0);
 });
 
 test('closing a viewer during AAC verification prevents an orphan encoder', async () => {

@@ -1,3 +1,35 @@
+# Memories strategy port — 10 November 2026
+
+Development candidate: rkmpp-3.3.5-r4-memories. This changes the server and
+browser pipeline; the historical R2/R3 results below are not validation of it.
+
+Local Windows checks:
+
+- Focused source/policy/lifecycle/controller regressions pass, including the
+  actual hls.js 1.7.3 startup controller and subsequent native downshifts.
+  There are 104 passing source checks; three real-FFmpeg cases are opt-in and
+  were also run separately with the binaries and compiled media module below.
+- Real FFmpeg H.264 B-frame and HEVC open-GOP remuxes pass full/cold fragment
+  decode, exact raw MP4 presentation ranges and original video payload hashes.
+- Real shared AAC passes padding through a short source's tail and cold seeks.
+- Server TypeScript, Svelte diagnostics and browser TypeScript pass.
+- The server production build passes.
+- The web production build passes (existing upstream chunk/wasm warnings).
+- The upstream targeted server suite passes 95/98 locally; three expected
+  Linux-path command snapshots differ only by Windows path separators. The
+  ARM64/Linux CI run is authoritative for those three snapshots.
+
+GitHub Actions builds the pinned ARM64 server and browser image, runs the full
+targeted upstream server suites and real fragment checks with the candidate's
+FFmpeg. Its exact revision/result must be checked on the PR.
+
+Still required: the new --memories RK3588 hardware cases and actual-browser
+fast/slow/network-change/quality-switch/seek/pause/EOF acceptance, with audible
+continuity and A/V drift checks. No live Immich instance was changed during
+this development. See [the deployment gate](docs/MEMORIES_PLAYBACK.md).
+
+---
+
 # Immich RKMPP verification
 
 Review date: 4 November 2026. Target: Immich 3.3.5 on RK3588, with the source and runtime pinned in `upstream.json`.

@@ -5,6 +5,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import test from 'node:test';
+import * as playback from '../overlays/server/src/utils/hls-playback.ts';
+import { join } from 'node:path';
 
 // Run the exact patched service with isolated repositories and the real Zod schema.
 // Install zod@4.4.3, or set IMMICH_ZOD_MODULE to that package's index.js.
@@ -40,6 +42,14 @@ const HLS_VARIANTS = [480, 720, 1080, 1440, 2160].flatMap((resolution) => [
   { resolution, codec: 'h264', bitrate: 2_500_000 },
 ]);
 const serviceContext = vm.createContext({
+  ...playback,
+  join,
+  constants: { R_OK: 4 },
+  StorageCore: { getHlsVariantFolder: ({ variantIndex }) => `/fixture/${variantIndex}` },
+  ImmichFileResponse: class { constructor(value) { Object.assign(this, value); } },
+  CacheControl: { PrivateWithCache: 'private' },
+  HLS_SEGMENT_FILENAME_REGEX: /^seg_(\d+)\.m4s$/,
+  HLS_SEGMENT_DURATION: 2,
   BadRequestException,
   NotFoundException,
   BaseService: class {},
@@ -73,6 +83,70 @@ function setup({ codecs = ['h264', 'hevc'], resolutions = [480, 720, 1080], enab
   } };
   return { sut, events, accesses };
 }
+
+async function memories({ copy = 'avc', codec = 'h264', grid = true } = {}) {
+  const h = setup();
+  h.sut.getConfig = async () => ({ ffmpeg: { accel: 'rkmpp', realtime: { enabled: true, videoCodecs: ['h264', 'hevc'], resolutions: [480, 720, 1080] } } });
+  const asset = { originalPath: '/private/source.mp4', format: { bitrate: 6_000_000 },
+    videoStream: { index: 0, width: 1920, height: 1080, timeBase: 1, codecName: codec, profile: codec === 'h264' ? 100 : 1,
+      level: codec === 'h264' ? 40 : 120, colorTransfer: 1, dvProfile: null, pixelFormat: 'yuv420p', rotation: 0, bitrate: 5_000_000 },
+    audioStream: { index: 1, codecName: 'flac', bitrate: 1_000_000 },
+    packets: { packetCount: 300, totalDuration: 10, outputFrames: 300 } };
+  h.sut.videoStreamRepository.getForMainPlaylist = async () => asset;
+  h.sut.videoStreamRepository.getForTranscoding = async () => asset;
+  h.sut.videoStreamRepository.getForMediaPlaylist = async () => asset;
+  h.sut.videoStreamRepository.getSession = async () => ({ assetId: 'asset' });
+  h.sut.mediaRepository = { probePlaybackTimeline: async () => grid ? [0, 2, 4, 6, 8].map((start) => ({ start, duration: 2 })) : null };
+  h.sut.storageRepository = { checkFileExists: async () => true };
+  const master = await h.sut.getMainPlaylist(auth, 'asset', undefined, { strategy: 'memories', copy });
+  return { ...h, master, plan: h.events.find((event) => event.name === 'HlsSessionRequest').event.playback };
+}
+
+test('Memories master advertises one audio group and real Original without starting any rendition', async () => {
+  const h = await memories();
+  assert.equal((h.master.match(/#EXT-X-MEDIA:TYPE=AUDIO/g) ?? []).length, 1);
+  assert.match(h.master, /original=1/);
+  assert.match(h.master, /AUDIO="audio"/);
+  assert.equal(h.plan.segments.length, 5);
+  assert.equal(h.plan.original.codec, 'avc1.640028');
+  assert.ok(h.events.every((event) => event.name === 'HlsSessionRequest'), 'master must not start the entire encoder ladder');
+  const playlist = await h.sut.getMediaPlaylist(auth, 'asset', sessionId, HLS_VARIANTS.length, 6, 'memories');
+  assert.match(playlist, /seg_3\.m4s\?strategy=memories/);
+  assert.doesNotMatch(playlist, /INDEPENDENT-SEGMENTS/, 'copied open GOPs must not be falsely declared independent');
+  assert.equal(h.events.length, 1, 'playlist prewarming must not race actual upcoming fragment selection');
+});
+
+test('unavailable copy grids and mismatched browser capabilities retain encoded HLS', async () => {
+  for (const options of [{ grid: false }, { copy: 'hevc' }]) {
+    const h = await memories(options);
+    assert.doesNotMatch(h.master, /original=1/);
+    assert.equal(h.plan.segments, null);
+    assert.match(h.master, /AUDIO="audio"/);
+  }
+});
+
+test('shared audio requests do not overwrite the video sequence or invalidate its pending requests', async () => {
+  const h = await memories();
+  await h.sut.getSegment(auth, 'asset', sessionId, 2, 'seg_3.m4s', undefined, 'memories');
+  await h.sut.getSegment(auth, 'asset', sessionId, HLS_VARIANTS.length + 1, 'seg_1.m4s', undefined, 'memories');
+  await h.sut.getSegment(auth, 'asset', sessionId, 2, 'init.mp4', undefined, 'memories');
+  assert.equal(h.events.at(-1).event.segmentIndex, 4, 'video init still follows video segment 3');
+  await assert.rejects(h.sut.getSegment(auth, 'wrong-asset', sessionId, 2, 'seg_0.m4s'), NotFoundException);
+  await assert.rejects(h.sut.getSegment(auth, 'asset', sessionId, HLS_VARIANTS.length, 'seg_999.m4s', undefined, 'memories'), NotFoundException);
+});
+
+test('another API worker fetches the owned session plan through internal events', async () => {
+  const h = await memories();
+  h.sut.sessions.clear();
+  const send = h.sut.websocketRepository.serverSend;
+  h.sut.websocketRepository.serverSend = (name, event) => {
+    send(name, event);
+    if (name === 'HlsPlaybackPlanRequest') queueMicrotask(() => h.sut.onPlaybackPlan({ sessionId, playback: h.plan }));
+  };
+  const playlist = await h.sut.getMediaPlaylist(auth, 'asset', sessionId, HLS_VARIANTS.length, undefined, 'memories');
+  assert.match(playlist, /seg_4\.m4s/);
+  assert.ok(h.events.some((event) => event.name === 'HlsPlaybackPlanRequest'));
+});
 
 test('authorized original metadata returns only the indexed playback fields, without reading media', async () => {
   const { sut, accesses, events } = setup();

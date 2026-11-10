@@ -1,4 +1,17 @@
-import { Controller, Delete, Get, Header, Headers, HttpCode, HttpStatus, Next, Param, Query, Res, StreamableFile } from '@nestjs/common';
+import {
+  Controller,
+  Delete,
+  Get,
+  Header,
+  Headers,
+  HttpCode,
+  HttpStatus,
+  Next,
+  Param,
+  Query,
+  Res,
+  StreamableFile,
+} from '@nestjs/common';
 import { ApiProduces, ApiTags } from '@nestjs/swagger';
 import { ZodValidationException } from 'nestjs-zod';
 import type { NextFunction, Response } from 'express';
@@ -49,8 +62,8 @@ export class VideoStreamController {
     description: 'Returns one MiB of uncached random bytes over the authenticated media origin.',
     history: new HistoryBuilder().added('v3').alpha('v3'),
   })
-  async getOriginalProbe(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto) {
-    return new StreamableFile(await this.service.getOriginalNetworkProbe(auth, id));
+  async getOriginalProbe(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto, @Query('bytes') bytes?: string) {
+    return new StreamableFile(await this.service.getOriginalNetworkProbe(auth, id, bytes));
   }
 
   @Get(':id/video/stream/main.m3u8')
@@ -60,15 +73,16 @@ export class VideoStreamController {
   @ApiProduces(HLS_PLAYLIST_CONTENT_TYPE)
   @Endpoint({
     summary: 'Get HLS main playlist',
-    description: 'Returns an HLS main playlist with available variants, optionally restricted to a configured video codec.',
+    description:
+      'Returns an HLS main playlist with available variants, optionally restricted to a configured video codec.',
     history: new HistoryBuilder().added('v3').alpha('v3'),
   })
   getMainPlaylist(
     @Auth() auth: AuthDto,
     @Param() { id }: UUIDParamDto,
-    @Query() { videoCodec }: HlsMainPlaylistQueryDto,
+    @Query() { videoCodec, strategy, copy }: HlsMainPlaylistQueryDto,
   ) {
-    return this.service.getMainPlaylist(auth, id, videoCodec);
+    return this.service.getMainPlaylist(auth, id, videoCodec, { strategy, copy });
   }
 
   @Get(':id/video/stream/:sessionId/:variantIndex/playlist.m3u8')
@@ -85,13 +99,21 @@ export class VideoStreamController {
     @Auth() auth: AuthDto,
     @Param() { id, sessionId, variantIndex }: HlsVariantParamDto,
     @Headers() headers: HlsPlaylistHeaderDto,
+    @Query('strategy') strategy?: string,
   ) {
     try {
       headers = HlsPlaylistHeaderDto.create(headers);
     } catch (error) {
       throw new ZodValidationException(error);
     }
-    return this.service.getMediaPlaylist(auth, id, sessionId, variantIndex, headers[ImmichHeader.HlsPosition]);
+    return this.service.getMediaPlaylist(
+      auth,
+      id,
+      sessionId,
+      variantIndex,
+      headers[ImmichHeader.HlsPosition],
+      strategy,
+    );
   }
 
   @Get(':id/video/stream/:sessionId/:variantIndex/:filename')
@@ -108,6 +130,7 @@ export class VideoStreamController {
     @Headers() headers: HlsSegmentHeaderDto,
     @Res() res: Response,
     @Next() next: NextFunction,
+    @Query('strategy') strategy?: string,
   ) {
     try {
       headers = HlsSegmentHeaderDto.create(headers);
@@ -117,7 +140,16 @@ export class VideoStreamController {
     await sendFile(
       res,
       next,
-      () => this.service.getSegment(auth, id, sessionId, variantIndex, filename, headers[ImmichHeader.HlsInitSegment]),
+      () =>
+        this.service.getSegment(
+          auth,
+          id,
+          sessionId,
+          variantIndex,
+          filename,
+          headers[ImmichHeader.HlsInitSegment],
+          strategy,
+        ),
       this.logger,
     );
   }

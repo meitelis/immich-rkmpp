@@ -186,7 +186,9 @@ export class BaseConfig implements VideoCodecSWConfig {
     const args: string[] = this.getBaseInputOptions(video);
     if (options.seekSeconds) {
       args.push('-ss', String(options.seekSeconds));
+      if (options.playback?.starts) args.push('-noaccurate_seek');
     }
+    if (options.playback) args.push('-readrate', '1', '-readrate_initial_burst', '18', '-readrate_catchup', '3.5');
     args.push(
       '-nostdin',
       '-nostats',
@@ -221,6 +223,27 @@ export class BaseConfig implements VideoCodecSWConfig {
       String(options.startSegment),
     );
 
+    if (options.playback) {
+      args.push('-an');
+      if (options.playback.starts) {
+        const rate = args.indexOf('-r');
+        args.splice(rate, 2, '-fps_mode', 'passthrough');
+        args[args.indexOf('-hls_time') + 1] = '0.00001';
+        args.push(
+          '-bf',
+          '0',
+          '-flags:v',
+          '+low_delay',
+          '-force_key_frames',
+          options.playback.starts
+            .filter((start) => start >= options.playback!.start - 0.000001)
+            .map((start) => Math.max(0, start - 0.000001).toFixed(9))
+            .join(','),
+        );
+      }
+      args[args.indexOf('-hls_segment_options') + 1] = 'movflags=+frag_discont+negative_cts_offsets:use_editlist=0';
+    }
+
     if (target !== options.target && options.startSegment > 0) {
       // Input accurate_seek only trims decoded streams. Copied AAC would retain
       // keyframe preroll, replaying old audio after a cold quality change. Drop
@@ -232,6 +255,9 @@ export class BaseConfig implements VideoCodecSWConfig {
 
     if ([TranscodeTarget.All, TranscodeTarget.Video].includes(options.target)) {
       const filters = this.getFilterOptions(video);
+      if (options.playback?.starts && options.playback.start > 0) {
+        filters.unshift(`trim=start=${Math.max(0, options.playback.start - 0.000001).toFixed(9)}`);
+      }
       if (filters.length > 0) {
         args.push('-vf', filters.join(','));
       }
@@ -1091,16 +1117,32 @@ export class RkmppSwDecodeConfig extends BaseHWConfig {
       return args;
     }
 
-    const { width, height } = this.shouldScale(video)
-      ? getOutputSize(video, this.getTargetResolution(video))
-      : video;
+    const { width, height } = this.shouldScale(video) ? getOutputSize(video, this.getTargetResolution(video)) : video;
     const fps = (options.packetCount * options.timeBase) / options.totalDuration;
     const codec = getCodecString(this.config.targetVideoCodec, width, height, fps);
-    const level = this.config.targetVideoCodec === VideoCodec.H264
-      ? Number.parseInt(codec.slice(-2), 16)
-      : Number(codec.split('.')[3].slice(1));
+    const level =
+      this.config.targetVideoCodec === VideoCodec.H264
+        ? Number.parseInt(codec.slice(-2), 16)
+        : Number(codec.split('.')[3].slice(1));
     // Match the master playlist instead of declaring level 5.1 for every size.
     args[args.indexOf('-level') + 1] = String(level);
+    if (options.playback && this.getMaxBitrateValue() > 0) {
+      // Match Memories' network-budgeted hardware VBR path. Offline conversion
+      // and the legacy muxed HLS path keep their existing AVBR/CQP policy.
+      const bitrate = this.getMaxBitrateValue();
+      const unit = this.getBitrateUnit();
+      args[args.indexOf('-rc_mode') + 1] = 'VBR';
+      args.splice(
+        args.length - 1,
+        0,
+        '-maxrate',
+        `${bitrate}${unit}`,
+        '-bufsize',
+        `${bitrate * 2}${unit}`,
+        '-qp_init',
+        String(this.config.crf),
+      );
+    }
     return args;
   }
 

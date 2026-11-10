@@ -3,7 +3,7 @@ set -eu
 usage() { echo 'Usage: sh scripts/build.sh [--image IMAGE] [--source-dir NEW_DIRECTORY]'; }
 fail() { echo "Error: $*" >&2; exit 1; }
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-image=local/immich-server:rkmpp-3.3.5-r3
+image=local/immich-server:rkmpp-3.3.5-r4-memories
 source_dir=$root/work/source-$(date -u +%Y%m%dT%H%M%SZ)-$$
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -60,5 +60,5 @@ PY
 fi
 docker build -f "$source_dir/Dockerfile.rkmpp" -t "$image" \
     --build-arg "RKMPP_REVISION=$revision" \
-    --build-arg 'IMMICH_BUILD=rkmpp-3.3.5-r3' "$source_dir"
+    --build-arg 'IMMICH_BUILD=rkmpp-3.3.5-r4-memories' "$source_dir"
 printf 'Built image: %s\nPrepared source: %s\n' "$image" "$source_dir"

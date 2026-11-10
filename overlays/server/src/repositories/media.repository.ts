@@ -38,6 +38,7 @@ import {
 } from 'src/enum.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { handlePromiseError } from 'src/utils/misc.js';
+import { PlaybackTimeline, type PlaybackSegment } from 'src/utils/hls-playback.js';
 import { createAffineMatrix } from 'src/utils/transform.js';
 
 const probe = (input: string, options: string[]): Promise<FfprobeData> =>
@@ -64,6 +65,56 @@ export type ExtractResult = {
 
 @Injectable()
 export class MediaRepository {
+  // A bounded packet-only pass distinguishes open-GOP presentation starts from
+  // decoder entry points. Never decode the library or buffer the probe output.
+  probePlaybackTimeline(input: string, streamIndex: number): Promise<PlaybackSegment[] | null> {
+    return new Promise((resolve) => {
+      const timeline = new PlaybackTimeline();
+      const child = spawn(
+        'ffprobe',
+        [
+          '-v',
+          'error',
+          '-select_streams',
+          String(streamIndex),
+          '-show_entries',
+          'packet=pts_time,duration_time,flags',
+          '-of',
+          'csv=p=0',
+          input,
+        ],
+        { stdio: ['ignore', 'pipe', 'ignore'] },
+      );
+      let pending = '';
+      let finished = false;
+      const finish = (ok: boolean) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeout);
+        if (!ok) child.kill('SIGKILL');
+        resolve(ok ? timeline.finish() : null);
+      };
+      // Original is optional; a slow source must not hold HLS startup indefinitely.
+      const timeout = setTimeout(() => finish(false), 1500);
+      const line = (value: string) => {
+        const [pts, duration, flags = ''] = value.trim().split(',');
+        timeline.packet(Number.parseFloat(pts), Number.parseFloat(duration), flags);
+      };
+      child.stdout.on('data', (chunk: Buffer) => {
+        pending += chunk.toString();
+        const lines = pending.split('\n');
+        pending = lines.pop()!;
+        for (const item of lines) line(item);
+        if (pending.length > 4096) finish(false);
+      });
+      child.on('error', () => finish(false));
+      child.on('close', (code) => {
+        if (pending) line(pending);
+        finish(code === 0);
+      });
+    });
+  }
+
   constructor(private logger: LoggingRepository) {
     this.logger.setContext(MediaRepository.name);
     // eslint-disable-next-line import-x/no-named-as-default-member

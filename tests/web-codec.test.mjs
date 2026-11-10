@@ -125,6 +125,8 @@ const component = await readFile(sourcePath('components/asset-viewer/VideoNative
 const script = component.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1]
   .replace(/^\s*import\s[\s\S]*?;\s*$/gm, '');
 const componentScript = stripTypeScriptTypes(script, { mode: 'strip' });
+const adaptiveSource = stripTypeScriptTypes((await readFile(sourcePath('utils/adaptive-playback.ts'), 'utf8'))
+  .replace(/^import[^\n]+\n/gm, ''), { mode: 'strip' }).replace(/\bexport\s+/g, '');
 const utilsSource = await readFile(sourcePath('utils.ts'), 'utf8');
 const hlsUrlSource = stripTypeScriptTypes(utilsSource.match(/export const getAssetHlsUrl = [\s\S]*?\n};/)[0].replace('export ', ''));
 
@@ -155,6 +157,8 @@ function harness({ native = false, paused = false, autoplay = true, original = f
       }
     }
     on(event, callback) { this.handlers.set(event, callback); }
+    off(event) { this.handlers.delete(event); }
+    trigger(event, data) { this.handlers.get(event)?.(event, data); return true; }
     stopLoad() { this.stopped = true; }
     startLoad(position) { this.startedAt = position; this.started = true; }
     removeLevel(index) { this.levels.splice(index, 1); }
@@ -172,6 +176,11 @@ function harness({ native = false, paused = false, autoplay = true, original = f
   }
   const context = {
     URL,
+    AbortController,
+    window: new EventTarget(),
+    document: Object.assign(new EventTarget(), { hidden: false }),
+    navigator: globalThis.navigator,
+    setInterval: () => 1, clearInterval() {},
     ...codecHelpers,
     ...directHelpers,
     monitorDirectPlayback: () => () => {},
@@ -200,7 +209,7 @@ function harness({ native = false, paused = false, autoplay = true, original = f
     mediaCapabilitiesManager: new MediaCapabilitiesManager(),
   };
   vm.createContext(context);
-  vm.runInContext(`${hlsUrlSource}\n${componentScript}\n globalThis.harness = {
+  vm.runInContext(`${hlsUrlSource}\n${adaptiveSource}\n${componentScript}\n globalThis.harness = {
     setVideo(video) { videoPlayer = video; },
     flush() {
       useHls = featureFlagsManager.value.realtimeTranscoding && (!playOriginalVideo || directFallbackAssetId === assetId);
@@ -227,6 +236,7 @@ function harness({ native = false, paused = false, autoplay = true, original = f
   const video = {
     tagName: original ? 'VIDEO' : 'HLS-VIDEO', currentTime: 45.25, paused, autoplay, api: undefined, sourceChanges: 0,
     error: null, playCalls: 0, pauseCalls: 0,
+    addEventListener() {}, removeEventListener() {},
     sourceAutoplay: [],
     set src(url) {
       this.sourceAutoplay.push(this.autoplay);
@@ -572,7 +582,7 @@ test('controller rebinding ignores superseded, removed and destroyed media', asy
   assert.equal(bindings.length, 1);
 });
 
-test('quality changes hint the real playhead once and init requests hint the exact pending fragment', async () => {
+test('quality changes preserve buffered playback and init requests hint the exact main or audio fragment', async () => {
   const h = harness();
   await flush(h);
   const api = h.video.api;
@@ -583,7 +593,10 @@ test('quality changes hint the real playhead once and init requests hint the exa
   const calls = [];
   const xhr = { open: (...args) => calls.push(['open', ...args]), setRequestHeader: (...args) => calls.push(args) };
   h.controls.setupRequest(xhr, playlist);
-  assert.deepEqual(calls.at(-1), ['x-immich-hls-pos', '12.25']);
+  assert.equal(api.currentLevel, 0, 'quality selection must not flush the current level');
+  assert.equal(api.loadLevel, 0, 'only future loads are pinned');
+  assert.equal(h.video.currentTime, 12.25);
+  assert.equal(calls.length, 1, 'do not prewarm at the playhead while switching buffered future fragments');
   assert.equal(new URL(calls[0][2]).searchParams.get('key'), 'keep-auth');
   calls.length = 0;
   h.controls.setupRequest(xhr, playlist);

@@ -20,8 +20,12 @@ import { AacProfile, DatabaseLock, ImmichWorker, JobName, QueueName, TranscodeTa
 import { BaseService } from 'src/services/base.service.js';
 import { isVideoStreamSessionPkConstraint } from 'src/utils/database.js';
 import { BaseConfig } from 'src/utils/media.js';
+import { copyVideoArgs, sharedAudioArgs, videoSeek, type PlaybackPlan } from 'src/utils/hls-playback.js';
 
 type Session = {
+  playback?: PlaybackPlan;
+  audioSession?: Session;
+  parent?: Session;
   audioProbe: Promise<AudioStreamInfo | null> | null;
   assetId: string;
   expiresAt: Date;
@@ -65,12 +69,13 @@ export class TranscodingService extends BaseService {
   }
 
   @OnEvent({ name: 'HlsSessionRequest', server: true, workers: [ImmichWorker.Microservices] })
-  async onSessionRequest({ assetId, sessionId, ownerId }: ArgOf<'HlsSessionRequest'>) {
+  async onSessionRequest({ assetId, sessionId, ownerId, playback }: ArgOf<'HlsSessionRequest'>) {
     try {
       const expiresAt = new Date(Date.now() + HLS_LEASE_DURATION_MS);
       await this.videoStreamRepository.createSession({ id: sessionId, assetId, expiresAt });
       this.sessions.set(sessionId, {
         audioProbe: null,
+        playback,
         assetId,
         expiresAt,
         id: sessionId,
@@ -96,6 +101,13 @@ export class TranscodingService extends BaseService {
     }
   }
 
+  @OnEvent({ name: 'HlsPlaybackPlanRequest', server: true, workers: [ImmichWorker.Microservices] })
+  onPlaybackPlanRequest({ sessionId }: ArgOf<'HlsPlaybackPlanRequest'>) {
+    const session = this.sessions.get(sessionId);
+    if (session)
+      this.websocketRepository.serverSend('HlsPlaybackPlanResult', { sessionId, playback: session.playback });
+  }
+
   @OnEvent({ name: 'HlsSessionEnd', server: true, workers: [ImmichWorker.Microservices] })
   async onSessionEnd({ sessionId }: ArgOf<'HlsSessionEnd'>) {
     const session = this.sessions.get(sessionId);
@@ -108,12 +120,13 @@ export class TranscodingService extends BaseService {
       this.cleanupInterval = null;
     }
     this.stopTranscode(session);
+    if (session.audioSession) this.stopTranscode(session.audioSession);
     await this.removeSessionDir(session);
     await this.videoStreamRepository.deleteSession(sessionId);
   }
 
   @OnEvent({ name: 'HlsHeartbeat', server: true, workers: [ImmichWorker.Microservices] })
-  async onHeartbeat({ sessionId, segmentIndex }: ArgOf<'HlsHeartbeat'>) {
+  async onHeartbeat({ sessionId, variantIndex, segmentIndex }: ArgOf<'HlsHeartbeat'>) {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return;
@@ -121,7 +134,14 @@ export class TranscodingService extends BaseService {
 
     session.lastActivityTime = new Date();
 
-    if (segmentIndex !== undefined) {
+    if (
+      session.playback &&
+      variantIndex === HLS_VARIANTS.length + 1 &&
+      session.audioSession &&
+      segmentIndex !== undefined
+    ) {
+      session.audioSession.lastClientRequestedSegment = segmentIndex;
+    } else if (segmentIndex !== undefined && (!session.playback || variantIndex === session.variantIndex)) {
       session.lastClientRequestedSegment = segmentIndex;
       this.applyBackpressure(session);
     }
@@ -136,9 +156,26 @@ export class TranscodingService extends BaseService {
 
   @OnEvent({ name: 'HlsSegmentRequest', server: true, workers: [ImmichWorker.Microservices] })
   async onSegmentRequest({ sessionId, variantIndex, segmentIndex }: ArgOf<'HlsSegmentRequest'>) {
-    const session = this.sessions.get(sessionId);
+    let session = this.sessions.get(sessionId);
     if (!session) {
       return;
+    }
+    if (session.playback && variantIndex === HLS_VARIANTS.length + 1) {
+      if (!session.playback.audio) return;
+      session.audioSession ??= {
+        ...session,
+        parent: session,
+        audioSession: undefined,
+        process: null,
+        starting: false,
+        startGeneration: 0,
+        startSegment: null,
+        variantIndex: null,
+        lastCompletedSegment: null,
+        lastClientRequestedSegment: null,
+        paused: false,
+      };
+      session = session.audioSession;
     }
 
     session.variantIndex ??= variantIndex;
@@ -179,10 +216,13 @@ export class TranscodingService extends BaseService {
   }
 
   private isCurrentStart(session: Session, generation: number) {
-    return this.sessions.get(session.id) === session && session.startGeneration === generation;
+    return this.sessions.get(session.id) === (session.parent ?? session) && session.startGeneration === generation;
   }
 
   private applyBackpressure(session: Session) {
+    // Pacing leaves asynchronous RKMPP operations running. SIGSTOP can lose an
+    // in-flight frame. Legacy clients keep their existing production policy.
+    if (session.playback) return;
     if (session.lastCompletedSegment === null || session.lastClientRequestedSegment === null) {
       return;
     }
@@ -215,13 +255,16 @@ export class TranscodingService extends BaseService {
     }
 
     const variant = HLS_VARIANTS[variantIndex];
-    if (!variant) {
+    const plan = session.playback;
+    const isOriginal = !!plan?.original && variantIndex === HLS_VARIANTS.length;
+    const isAudio = !!plan?.audio && variantIndex === HLS_VARIANTS.length + 1;
+    if ((!variant && !isOriginal && !isAudio) || (plan && variant && plan.bitrates[variantIndex] === undefined)) {
       this.logger.error(`Variant ${variantIndex} out of range for asset ${session.assetId}`);
       await this.failSession(session, `Invalid variant index ${variantIndex}`);
       return;
     }
 
-    const audio = await this.getSessionAudio(session, asset.audioStream, asset.originalPath);
+    const audio = plan ? asset.audioStream : await this.getSessionAudio(session, asset.audioStream, asset.originalPath);
     if (!this.isCurrentStart(session, generation)) {
       return;
     }
@@ -233,14 +276,29 @@ export class TranscodingService extends BaseService {
     });
     this.storageRepository.mkdirSync(variantDir);
 
+    if (isOriginal || isAudio) {
+      const args = isOriginal
+        ? copyVideoArgs(asset.originalPath, asset.videoStream, plan!.segments!, startSegment, variantDir, join)
+        : sharedAudioArgs(asset.originalPath, asset.audioStream!, plan!.duration, startSegment, variantDir, join);
+      const process = this.processRepository.spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      this.attachProcessHandlers(process, session, variantIndex);
+      return process;
+    }
+
     // Encoder runs at fps = packetCount × timeBase / totalDuration with
     // gop = ceil(SEGMENT_DURATION × fps). To start segment K's content at
     // exactly cfr slot K × gop, seek to the midpoint between slots K×gop−1 and
     // K×gop. accurate_seek's "discard < target" then keeps the source frame
     // that quantizes to slot K×gop and discards the one quantizing to K×gop−1.
     const fps = (asset.packets.packetCount * asset.videoStream.timeBase) / asset.packets.totalDuration;
-    const gop = Math.ceil(HLS_SEGMENT_DURATION * fps);
-    const seekSeconds = startSegment > 0 ? (startSegment * gop - 0.5) / fps : 0;
+    const gop = plan?.segments
+      ? Math.ceil(plan.duration * fps) + Math.ceil(fps)
+      : Math.ceil(HLS_SEGMENT_DURATION * fps);
+    const seekSeconds = plan?.segments
+      ? videoSeek(plan.segments, startSegment, false)
+      : startSegment > 0
+        ? (startSegment * gop - 0.5) / fps
+        : 0;
 
     let config;
     try {
@@ -249,7 +307,7 @@ export class TranscodingService extends BaseService {
           ...ffmpeg,
           targetVideoCodec: variant.codec,
           targetResolution: String(Math.min(variant.resolution, asset.videoStream.width, asset.videoStream.height)),
-          maxBitrate: `${Math.round(variant.bitrate / 1000)}k`,
+          maxBitrate: `${Math.round((plan?.bitrates[variantIndex] ?? variant.bitrate) / 1000)}k`,
           gopSize: gop,
           crf: HLS_CRF[variant.codec],
         },
@@ -276,12 +334,21 @@ export class TranscodingService extends BaseService {
         target: TranscodeTarget.All,
         timeBase: asset.videoStream.timeBase,
         totalDuration: asset.packets.totalDuration,
+        ...(plan
+          ? {
+              playback: {
+                starts: plan.segments?.map((s) => s.start),
+                start: plan.segments?.[startSegment]?.start ?? (startSegment * gop) / fps,
+                duration: plan.duration,
+              },
+            }
+          : {}),
       },
       asset.videoStream,
-      audio ?? undefined,
+      plan ? undefined : (audio ?? undefined),
     );
     this.logger.log(
-      `Starting HLS transcode for asset ${session.assetId} variant ${variantIndex} with command: ffmpeg ${args.join(' ')}`,
+      `Starting HLS ${plan ? 'paced video' : 'transcode'} variant ${variantIndex} for session ${session.id}`,
     );
     const process = this.processRepository.spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
     this.attachProcessHandlers(process, session, variantIndex);
@@ -301,7 +368,7 @@ export class TranscodingService extends BaseService {
     // The stored audio metadata predates channel/sample-rate fields. Probe only
     // copy candidates, once per session, without changing the database schema.
     session.audioProbe ??= Promise.resolve()
-      .then(() => this.sessions.get(session.id) === session ? this.mediaRepository.probe(originalPath) : undefined)
+      .then(() => (this.sessions.get(session.id) === session ? this.mediaRepository.probe(originalPath) : undefined))
       .then((info) => info?.audioStreams.find(({ index }) => index === audio.index) ?? null)
       .catch((error: unknown) => {
         this.logger.warn(`Could not verify HLS audio compatibility for asset ${session.assetId}: ${error}`);
@@ -357,7 +424,7 @@ export class TranscodingService extends BaseService {
       if (session.process !== process) {
         return;
       }
-      stderr += chunk.toString();
+      stderr = (stderr + chunk.toString()).slice(-64 * 1024);
     });
 
     process.on('exit', (code) => {

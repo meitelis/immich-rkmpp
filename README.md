@@ -11,17 +11,17 @@ The exact upstream source commit and official runtime digest are in [upstream.js
 Use an ARM64 Linux build host with Docker, Git and Python 3. Host Node.js is optional: if Node.js 24 or newer is available, source preparation uses it; otherwise one disposable container from the pinned official build image supplies Node and Git. No host npm or pnpm installation is needed. The RK3588 device interfaces are needed for hardware verification and playback, not for compiling the image. Docker BuildKit is optional.
 
 ```sh
-git clone https://github.com/meitelis/immich-rkmpp.git
+git clone --branch codex/memories-playback-strategy https://github.com/meitelis/immich-rkmpp.git
 cd immich-rkmpp
 sh scripts/build.sh
 ```
 
-The build creates `local/immich-server:rkmpp-3.3.5-r3`. It fetches a fresh pinned upstream checkout under `work/`, applies the overlays, checks the server and browser, and compiles both. The runtime reuses the matching official image's dependencies, FFmpeg, CLI and core plugins. It does not rebuild unrelated Immich CLI or plugin binaries. A container used for source preparation is removed when it finishes; it adds no ongoing runtime service.
+The build creates `local/immich-server:rkmpp-3.3.5-r4-memories`. It fetches a fresh pinned upstream checkout under `work/`, applies the overlays, checks the server and browser, and compiles both. The runtime reuses the matching official image's dependencies, FFmpeg, CLI and core plugins. It does not rebuild unrelated Immich CLI or plugin binaries. A container used for source preparation is removed when it finishes; it adds no ongoing runtime service.
 
 For another tag or source destination:
 
 ```sh
-sh scripts/build.sh --image local/immich-server:rkmpp-3.3.5-r3 \
+sh scripts/build.sh --image local/immich-server:rkmpp-3.3.5-r4-memories \
   --source-dir /path/to/new/immich-source
 ```
 
@@ -34,7 +34,7 @@ Start from the existing, working Immich 3.3.5 Compose stack. Keep its database, 
 Deployment and rollback require Docker Compose and Python 3 only; Node.js, npm and pnpm are not required on the Radxa.
 
 1. Save a copy of the Compose file **before editing it**, such as `docker-compose.yml.before-rkmpp`.
-2. Change only the `immich-server` image to `local/immich-server:rkmpp-3.3.5-r3` and set `pull_policy: never` for a locally built image.
+2. Change only the `immich-server` image to `local/immich-server:rkmpp-3.3.5-r4-memories` and set `pull_policy: never` for a locally built image.
 3. Remove any old bind mount that replaces `/usr/src/app/server/dist/utils/media.js`, another compiled server file, or `/build/www`. Such a mount would hide the code built into this image. The deployment script refuses these mounts.
 4. Retain the RK3588 devices and matching Mali/OpenCL host setup. [compose.override.example.yml](compose.override.example.yml) shows the relevant device and library mappings, but is not a replacement for a complete Immich stack. Compose merges volume entries, so adding this example alone does not remove an old JavaScript mount.
 5. Deploy the server using the **existing Compose project name**:
@@ -65,33 +65,19 @@ sh scripts/rollback.sh --state-dir /path/to/private/immich-rkmpp-backups/deploy-
 
 This recreates only the server from its previous resolved configuration and exact saved image ID. It does not roll back the database or media. Restore the pre-change Compose source as well before a later Portainer or Compose stack redeploy; the rollback command does not edit that source file.
 
-## Draft: automatic original-first playback
+## Development: Memories playback strategy
 
-This development branch adds **Auto: prefer original (on/off)** to the Immich
-video settings menu (when extended controls are available). Auto is on by
-default, while the existing explicit **Play original** choice still overrides it.
+Auto now keeps compatible Original video and RKMPP-encoded qualities in one
+adaptive HLS player. A bounded connection probe guides startup; quality changes
+preserve playable buffers and one shared AAC audio timeline. Original remuxes
+the source video without re-encoding it. Source-grid encodes use hardware input
+pacing instead of SIGSTOP/CONT. Explicit Play original remains available.
 
-Before starting any FFmpeg process, the web player requests indexed codec,
-profile, container and bitrate metadata from an authenticated API route. Known
-MP4/M4V AVC or HEVC files with supported AAC-LC audio may play as the unmodified
-original when the browser advertises codec support and an uncached, one-MiB
-same-origin sample measures at least 1.8x the source's recorded bitrate.
-The decision takes at most 2.2 seconds; uncertain metadata, unsupported codecs,
-HDR/Dolby Vision, errors, poor throughput or cancelled requests select Immich's
-existing HLS path. Manual Original remains available for those sources.
-
-If a direct original subsequently fails decoding, stalls persistently or the
-playable buffer drains, the existing monitor switches once to adaptive HLS,
-preserving the playback time and paused/playing state. It does not switch back
-to original during the same asset session. Changing Auto from the settings menu
-re-evaluates the choice. Probes are authenticated, no-store, bounded, and do
-not read the original file or create a transcoder session.
-
-**Release status:** source implementation under review. Do not deploy before
-the ARM64 production build, browser integration checks and actual ROCK 5B+
-playback tests pass. A network sample is not a guarantee against VBR spikes,
-server load or future Wi-Fi degradation. Native mobile clients retain their
-original playback implementation; this feature targets the web viewer only.
+See [the playback port and deployment gate](docs/MEMORIES_PLAYBACK.md) for
+eligibility, fallback, behavior and test commands. The new image is a development
+candidate. ARM64 image checks, board hardware tests and real-browser acceptance
+must pass before deploying it to the main server. Earlier R2/R3 results do not
+validate this new server/browser pipeline.
 
 ## Playback configuration
 

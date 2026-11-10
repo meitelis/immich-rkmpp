@@ -1,4 +1,11 @@
-export type Level = { videoCodec?: string; width: number; height: number; bitrate: number; frameRate: number };
+export type Level = {
+  videoCodec?: string;
+  width: number;
+  height: number;
+  bitrate: number;
+  frameRate: number;
+  url?: string[];
+};
 
 export const DEFAULT_DECODING_INFO: MediaCapabilitiesDecodingInfo = {
   powerEfficient: false,
@@ -15,8 +22,13 @@ export class MediaCapabilitiesManager {
     const decodingInfo = await Promise.all(levels.map((level) => this.decodingInfo(level)));
     // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const candidatesByHeight = new Map<number, number[]>();
+    const originals: number[] = [];
     for (let i = 0; i < levels.length; i++) {
       if (decodingInfo[i].supported) {
+        if (levels[i].url?.some((url) => new URL(url, 'https://local.invalid').searchParams.get('original') === '1')) {
+          originals.push(i);
+          continue;
+        }
         const candidates = candidatesByHeight.get(levels[i].height) ?? [];
         candidates.push(i);
         candidatesByHeight.set(levels[i].height, candidates);
@@ -38,12 +50,13 @@ export class MediaCapabilitiesManager {
         selected.push(best);
       }
     }
-    return new Set(selected);
+    return new Set([...selected, ...originals]);
   }
 
   decodingInfo(level: Level): Promise<MediaCapabilitiesDecodingInfo> {
-    const mediaSource = (globalThis as typeof globalThis & { ManagedMediaSource?: typeof MediaSource })
-      .ManagedMediaSource ?? globalThis.MediaSource;
+    const mediaSource =
+      (globalThis as typeof globalThis & { ManagedMediaSource?: typeof MediaSource }).ManagedMediaSource ??
+      globalThis.MediaSource;
     const contentType = `video/mp4; codecs="${level.videoCodec}"`;
     try {
       if (!level.videoCodec || !mediaSource?.isTypeSupported(contentType)) {

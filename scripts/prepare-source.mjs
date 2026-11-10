@@ -33,6 +33,7 @@ if (manifest.version !== upstream.version || manifest.packageManager !== 'pnpm@1
 await cp(path.join(root, 'overlays'), target, { recursive: true });
 await cp(path.join(root, 'Dockerfile.rkmpp'), path.join(target, 'Dockerfile.rkmpp'));
 await cp(path.join(root, 'NOTICE'), path.join(target, 'RKMPP_NOTICE'));
+await cp(path.join(root, 'LICENSES'), path.join(target, 'RKMPP_LICENSES'), { recursive: true });
 console.log('Prepared Immich ' + upstream.version + ' at ' + target);
 console.log('Build: docker build -f "' + path.join(target, 'Dockerfile.rkmpp') +
-  '" -t local/immich-server:rkmpp-' + upstream.version + '-r3 "' + target + '"');
+  '" -t local/immich-server:rkmpp-' + upstream.version + '-r4-memories "' + target + '"');

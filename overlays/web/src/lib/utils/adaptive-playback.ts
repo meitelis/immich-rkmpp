@@ -30,7 +30,7 @@ export const isOriginalLevel = (level?: { url: string[] }) =>
   level?.url.some((url) => new URL(url, 'https://local.invalid').searchParams.get('original') === '1') ?? false;
 
 export function playbackEndpoint(master: string, endpoint: string, authParams: Record<string, unknown> = {}) {
-  const url = new URL(master);
+  const url = new URL(master, globalThis.location?.href);
   if (!url.pathname.endsWith('/main.m3u8')) throw new Error('Unexpected playback URL');
   url.pathname = url.pathname.slice(0, -'main.m3u8'.length) + endpoint;
   url.searchParams.delete('videoCodec');
@@ -140,7 +140,8 @@ export async function prepareAdaptivePlayback({
   supported?: (mime: string) => boolean;
   fetcher?: typeof fetch;
 }) {
-  const url = new URL(masterUrl);
+  // getAssetHlsUrl uses the SDK's API base, normally the relative path /api.
+  const url = new URL(masterUrl, globalThis.location?.href);
   for (const [key, value] of Object.entries(authParams ?? {}))
     if (typeof value === 'string' && value) url.searchParams.set(key, value);
   url.searchParams.set('strategy', 'memories');

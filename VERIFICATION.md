@@ -7,7 +7,7 @@ Local Windows checks:
 
 - Focused source/policy/lifecycle/controller regressions pass, including the
   actual hls.js 1.7.3 startup controller and subsequent native downshifts.
-  There are 104 passing source checks; three real-FFmpeg cases are opt-in and
+  There are 107 passing source checks; three real-FFmpeg cases are opt-in and
   were also run separately with the binaries and compiled media module below.
 - Real FFmpeg H.264 B-frame and HEVC open-GOP remuxes pass full/cold fragment
   decode, exact raw MP4 presentation ranges and original video payload hashes.
@@ -28,10 +28,23 @@ tests. Runtime fragment checks caught the bundled FFmpeg's missing
 readrate_catchup option. The port uses its supported readrate 1 / initial burst
 18 options and does not change the pinned FFmpeg or runtime dependencies.
 
-Still required: the new --memories RK3588 hardware cases and actual-browser
+The user ran the SDR hardware matrix on commit 85d2f745: 34/34 passed,
+including paced/source-grid/cold-seek cases. Mali/HDR was not exercised.
+The user then deployed that candidate; live browser inspection found an empty
+media source and `Failed to construct 'URL': Invalid URL` before HLS startup.
+The new preparation helper incorrectly required an absolute master URL, while
+Immich's production URL builder normally returns `/api/assets/...`.
+
+The fix resolves both preparation and probe/metadata endpoint URLs against the
+browser location. Three regressions use the production URL-builder functions
+with root-relative, subpath and absolute API bases; the two relative cases fail
+before the fix and pass after it. Authentication and codec query parameters
+are checked. No server, FFmpeg or hardware behavior changes in this fix.
+
+Still required: repeat actual-browser startup after deploying the URL fix, then
 fast/slow/network-change/quality-switch/seek/pause/EOF acceptance, with audible
-continuity and A/V drift checks. No live Immich instance was changed during
-this development. See [the deployment gate](docs/MEMORIES_PLAYBACK.md).
+continuity and A/V drift checks. The fix has not been deployed by the agent.
+See [the deployment gate](docs/MEMORIES_PLAYBACK.md).
 
 ---
 

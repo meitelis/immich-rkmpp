@@ -1,7 +1,55 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
+import vm from 'node:vm';
 import { PlaybackTimeline, audioSegments, originalVideoCodec, videoSeek, playbackPlaylist, sharedAudioArgs, copyVideoArgs } from '../overlays/server/src/utils/hls-playback.ts';
-import { adaptiveHlsConfig, originalCapability, prepareAdaptivePlayback, probeConnection, safeEstimate, transferBandwidth } from '../overlays/web/src/lib/utils/adaptive-playback.ts';
+import { adaptiveHlsConfig, originalCapability, playbackEndpoint, prepareAdaptivePlayback, probeConnection, safeEstimate, transferBandwidth } from '../overlays/web/src/lib/utils/adaptive-playback.ts';
+
+// Exercise the URL builder that the real Svelte component passes to preparation.
+// Immich normally uses a relative API base; a synthetic absolute URL hid the bug.
+const utils = readFileSync(new URL('../overlays/web/src/lib/utils.ts', import.meta.url), 'utf8');
+const urlBuilders = stripTypeScriptTypes([
+  utils.match(/const createUrl = [\s\S]*?\n};/)[0],
+  utils.match(/export const getAssetHlsUrl = [\s\S]*?\n};/)[0].replace('export ', ''),
+].join('\n'));
+for (const base of ['/api', '/immich/api', 'https://media.test/immich/api']) {
+  test(`browser playback starts with the production URL builder and API base ${base}`, async (t) => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'location');
+    Object.defineProperty(globalThis, 'location', { configurable: true, value: { href: 'https://cloud.test/immich/photos/id' } });
+    t.after(() => previous ? Object.defineProperty(globalThis, 'location', previous) : delete globalThis.location);
+    const masterUrl = vm.runInNewContext(`${urlBuilders}\ngetAssetHlsUrl('id', 'h264')`, {
+      URL, URLSearchParams, getBaseUrl: () => base, authManager: { params: { key: 'secret' } },
+    });
+    const expected = new URL(`${base}/assets/id/video/stream/`, globalThis.location.href);
+    const endpoint = playbackEndpoint(masterUrl, 'original-info');
+    assert.equal(endpoint.origin, expected.origin);
+    assert.equal(endpoint.pathname, `${expected.pathname}original-info`);
+    assert.equal(endpoint.searchParams.get('key'), 'secret');
+    assert.equal(endpoint.searchParams.has('videoCodec'), false);
+    const requests = [];
+    const decision = await prepareAdaptivePlayback({
+      masterUrl, signal: new AbortController().signal, supported: () => true,
+      fetcher: async (value) => {
+        const url = new URL(value);
+        requests.push(url.pathname);
+        assert.equal(url.origin, expected.origin);
+        assert.equal(url.searchParams.get('key'), 'secret');
+        return { ok: true, headers: { get: () => null },
+          json: async () => ({ rotation: 0, dvProfile: null, colorTransfer: 1, videoCodec: 'h264', videoProfile: 100, videoLevel: 40, pixelFormat: 'yuv420p' }),
+          arrayBuffer: async () => new ArrayBuffer(Number(url.searchParams.get('bytes'))) };
+      },
+    });
+    const source = new URL(decision.url);
+    assert.equal(source.origin, expected.origin);
+    assert.equal(source.pathname, `${expected.pathname}main.m3u8`);
+    assert.equal(source.searchParams.get('videoCodec'), 'h264');
+    assert.equal(source.searchParams.get('strategy'), 'memories');
+    assert.equal(source.searchParams.get('copy'), 'avc');
+    assert.equal(requests.length, 4);
+    assert.ok(requests.every((path) => path.startsWith(expected.pathname)));
+  });
+}
 
 test('open-GOP packet order yields one presentation grid and separate decoder entry points', () => {
   const timeline = new PlaybackTimeline();

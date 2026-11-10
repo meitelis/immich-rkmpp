@@ -10,6 +10,9 @@ the draft direct-file Auto policy with one adaptive HLS playback path.
   Its conservative bandwidth estimate seeds native hls.js Auto. The separate
   lowest-rendition startup bandwidth test is disabled, so fast links need not
   cold-start 480p before selecting high quality.
+  An affordable supported Original is explicitly seeded for the first load so
+  native codec-tier preference cannot select an unnecessary encoded alternative.
+  Subsequent loads remain under native Auto control.
 - A compatible Original is a video stream-copy rendition in the same master.
   It has the source codec/profile and original dimensions; FFmpeg remuxes video
   packets without decoding, scaling or encoding them. Original does not imply
@@ -41,6 +44,8 @@ the draft direct-file Auto policy with one adaptive HLS playback path.
 - Native hls.js still selects Auto renditions and handles emergency downshifts.
   The pinned hls-video-element's programmatic downgrade notification is prevented
   from silently turning Auto into a manual quality pin.
+  Recoverable errors are logged without serializing circular loader data, and
+  detaching the player restores both temporary integration hooks.
 - Original failure disables copy for that asset session and resumes encoded HLS
   at the remembered time and pause state. Explicit **Play original** remains a
   direct-file override with its existing one-way HLS fallback.

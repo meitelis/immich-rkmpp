@@ -72,7 +72,7 @@ export class HlsService extends BaseService {
     this.pendingSegments.complete(this.getSegmentKey(event), event);
   }
 
-  // Authenticated metadata for the browser's conservative direct-file decision.
+  // Indexed codec metadata for the browser's Original eligibility check.
   // Reuses indexed streams; no FFprobe, no original path and no transcoder start.
   async getOriginalPlaybackInfo(auth: AuthDto, assetId: string) {
     await this.requireAccess({ auth, permission: Permission.AssetView, ids: [assetId] });
@@ -81,22 +81,13 @@ export class HlsService extends BaseService {
       throw new NotFoundException('Video metadata is not available');
     }
     const video = asset.videoStream;
-    const audio = asset.audioStream;
-    const extension = asset.originalPath.split('.').at(-1)?.toLowerCase() ?? '';
     return {
-      container: extension,
       videoCodec: video.codecName,
       videoProfile: video.profile,
       videoLevel: video.level,
       pixelFormat: video.pixelFormat,
       colorTransfer: video.colorTransfer,
       dvProfile: video.dvProfile,
-      audioCodec: audio?.codecName ?? null,
-      audioProfile: audio?.profile ?? null,
-      bitrate: Math.max(asset.format.bitrate ?? 0, video.bitrate + (audio?.bitrate ?? 0)),
-      width: video.width,
-      height: video.height,
-      frameRate: video.frameRate,
       rotation: video.rotation,
     };
   }

@@ -104,16 +104,12 @@
   let adaptiveDecision: { assetId: string; url: string; bandwidth: number } | undefined = $state();
   let playbackStatus = $state('');
   let originalRenditionIds: string[] = $state([]);
-  let autoOriginalPending = $derived(
-    publicConfig.ffmpeg.realtime.enabled &&
-      (!playOriginalVideo || directFallbackAssetId === assetId) &&
-      adaptiveDecision?.assetId !== assetId,
-  );
   let useHls = $derived(
     publicConfig.ffmpeg.realtime.enabled && (!playOriginalVideo || directFallbackAssetId === assetId),
   );
+  let adaptivePending = $derived(useHls && adaptiveDecision?.assetId !== assetId);
   let assetFileUrl = $derived.by(() => {
-    if (autoOriginalPending) return '';
+    if (adaptivePending) return '';
     if (useHls) {
       return adaptiveDecision?.assetId === assetId
         ? adaptiveDecision.url
@@ -374,8 +370,9 @@
         data.response?.code !== 404 ||
         rebuildCount++ >= MAX_REBUILDS
       ) {
-        // JSON serialization drops Error.message/stack, hiding fatal recovery failures.
-        console.error('HLS error', data.error, JSON.stringify(data));
+        // Fragments reference their loader/context and can be circular. Throwing
+        // while reporting a recoverable abort makes hls.js stop with a fatal error.
+        console.error('HLS error', { type: data.type, details: data.details, fatal: data.fatal }, data.error);
         return;
       }
       console.warn('Error loading segment, starting new session');
@@ -566,7 +563,7 @@
     let disposed = false;
     const updateMedia = (next: HTMLVideoElement | undefined) => {
       const version = ++generation;
-      // media-chrome 4.19.2 can process an added replacement before the removed
+      // media-chrome can process an added replacement before the removed
       // old media and then clear its store. Rebind after that mutation batch,
       // preserving this controller (and its fullscreen element and controls).
       queueMicrotask(() => {
@@ -592,13 +589,14 @@
     };
   };
 
-  type Rendition = { id: string; width: number; height: number; bitrate?: number; original?: boolean };
+  type Rendition = { id: string; width: number; height: number; bitrate?: number };
   const originalRenditionLabels = (element: HTMLElement, ids: string[]) => {
     const menu = element as HTMLElement & {
       mediaRenditionList: Rendition[];
       formatRendition: (rendition: Rendition, options?: { showBitrate?: boolean }) => string;
     };
     const format = menu.formatRendition;
+    const originalFormat = Object.getOwnPropertyDescriptor(menu, 'formatRendition');
     let currentIds = ids;
     menu.formatRendition = (rendition) => {
       const label = currentIds.includes(rendition.id)
@@ -614,16 +612,15 @@
     };
     const update = (values: string[]) => {
       currentIds = values;
-      menu.mediaRenditionList = menu.mediaRenditionList.map((rendition) => ({
-        ...rendition,
-        original: values.includes(rendition.id),
-      }));
+      // Re-render labels after the HLS manifest identifies Original's menu ID.
+      menu.mediaRenditionList = [...menu.mediaRenditionList];
     };
     update(ids);
     return {
       update,
       destroy: () => {
-        menu.formatRendition = format;
+        if (originalFormat) Object.defineProperty(menu, 'formatRendition', originalFormat);
+        else Reflect.deleteProperty(menu, 'formatRendition');
       },
     };
   };

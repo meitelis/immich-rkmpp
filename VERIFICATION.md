@@ -5,22 +5,40 @@ official 3.4.0 source and matching pinned runtime. Upstream event, image,
 public-config, import and FaceEditor changes are preserved. The quality menu
 adds advertised bitrate labels and always includes eligible Original in Auto.
 
-Local validation: 106 source/controller regressions, three real H.264/HEVC/AAC
+Local validation: 112 source/controller regressions, three real H.264/HEVC/AAC
 fragment cases, server/web TypeScript, Svelte diagnostics and both production
 builds pass. The actual Media Chrome 4.19.3 menu renders the new resolution,
 Original and bitrate labels without console errors in an isolated browser
 preview. Targeted upstream tests pass 95/98 on Windows; the remaining three
 compare Linux paths. The ARM64 CI result on the PR is authoritative.
 
-The user reports smooth playback and resolution switching on the corrected
-3.3.5 image. The 3.4.0 candidate still needs on-board and live playback checks.
-Follow-up live testing on 3.3.5 reproduced a 4K SDR Main10 clip stopping at
-3.94 seconds with 4.01 seconds buffered. Aborted fragment requests were followed
-by a fatal hls.js internal exception. A synthetic delayed-fragment test also
-reproduced a stall and Auto downshift, but not that fatal exception. The client
-now logs the original Error object alongside its JSON event so the missing
-message/stack can be captured. No buffering or adaptation change is claimed as
-a fix for this case; it remains open pending a trace from the updated client.
+Live inspection of 3.3.5 found a Main10 clip stopping with about four seconds
+buffered, after aborted requests and a fatal hls.js internal exception. An
+isolated browser reproduction exposed circular Fragment/loader/context data:
+serializing the entire error event throws inside the viewer's error listener,
+which hls.js converts into a fatal internal exception and stops loading. The
+viewer now logs scalar event fields and the original Error safely. A regression
+checks circular abort data against the actual component handler.
+
+The pinned hls.js startup controller also preferred the AVC codec tier over an
+affordable supported Main10 Original. Measured fast startup now seeds Original
+for the first load only. Native Auto remains enabled; real controller tests
+verify slow-transfer downshifts for both AVC and mixed-codec masters.
+
+Browser checks use the actual viewer handler, adaptive helper and pinned HLS
+element with generated Main10/open-GOP video, compiled video-fragment commands
+and shared AAC. A 45-second encoded run changed 480p -> 1080p -> Auto, presented
+all three selected levels, and reached EOF without a waiting event or error.
+A deliberately slowed Original transfer caused a native downshift into encoded
+video and reached EOF. Delayed production recovered without a fatal exception;
+a producer delayed beyond the available buffer can still cause an underrun.
+These synthetic checks do not establish audible continuity or physical RKMPP
+throughput. No private media is included in the fixtures or repository.
+
+Cleanup now restores both temporary HLS hooks exactly and is idempotent; an old
+cleanup cannot detach a subsequent attachment. The menu formatter restores its
+native property, and unused metadata and duplicate pending state were removed.
+The 3.4.0 candidate still needs on-board and live playback acceptance.
 Upgrading from 3.3.5 runs upstream database migrations: back up the database and
 stack before deployment; replacing the image alone does not undo migrations.
 

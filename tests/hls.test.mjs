@@ -155,18 +155,16 @@ test('authorized original metadata returns only the indexed playback fields, wit
     format: { bitrate: 7_760_000 },
     videoStream: {
       codecName: 'hevc', profile: 1, level: 153, pixelFormat: 'yuv420p',
-      colorTransfer: 1, dvProfile: null, bitrate: 7_000_000,
+      colorTransfer: 1, dvProfile: null, bitrate: 7_000_000, rotation: 0,
       width: 3200, height: 1800, frameRate: 30,
     },
     audioStream: { codecName: 'aac', profile: 2, bitrate: 160_000 },
   });
   const info = await sut.getOriginalPlaybackInfo(auth, 'asset');
-  assert.equal(info.container, 'mp4');
-  assert.equal(info.width, 3200);
-  assert.equal(info.bitrate, 7_760_000);
-  assert.equal(info.audioCodec, 'aac');
-  assert.equal(info.videoProfile, 1);
-  assert.equal(Object.hasOwn(info, 'originalPath'), false, 'server paths are private');
+  assert.deepEqual({ ...info }, {
+    videoCodec: 'hevc', videoProfile: 1, videoLevel: 153, pixelFormat: 'yuv420p',
+    colorTransfer: 1, dvProfile: null, rotation: 0,
+  }, 'only codec eligibility fields are exposed');
   assert.equal(events.length, 0, 'checking Original should not open an encoder session');
   assert.equal(accesses[0].auth, auth);
 });

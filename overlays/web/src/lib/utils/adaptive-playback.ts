@@ -189,12 +189,13 @@ export function attachAdaptivePlayback(
   let automaticNotification = false;
   // hls-video-element 1.5.11 mirrors an emergency downgrade into its rendition
   // menu. That programmatic change must not turn Auto into a manual quality pin.
-  const originalTrigger = hls.trigger.bind(hls);
+  const originalTrigger = hls.trigger;
+  const originalNextLevel = Object.getOwnPropertyDescriptor(hls, 'nextLevel');
   hls.trigger = ((event: string, data: unknown) => {
     const previous = automaticNotification;
     if (event === events.Events.LEVEL_SWITCHED) automaticNotification = hls.autoLevelEnabled;
     try {
-      return (originalTrigger as (event: string, data: unknown) => boolean)(event, data);
+      return (originalTrigger as (event: string, data: unknown) => boolean).call(hls, event, data);
     } finally {
       if (automaticNotification) {
         const renditions = (video as HTMLVideoElement & { videoRenditions?: { selectedIndex: number } })
@@ -234,9 +235,17 @@ export function attachAdaptivePlayback(
       if (level === -1) void refresh(true);
     },
   });
-  hls.startLevel = -1;
   hls.loadLevel = -1;
-  hls.bandwidthEstimate = safeEstimate(initialBandwidth);
+  const estimate = safeEstimate(initialBandwidth);
+  hls.bandwidthEstimate = estimate;
+  // Native startup can prefer the AVC codec tier over an affordable Main10
+  // Original. Select only the first rendition; manualLevel stays -1 so native
+  // Auto can still downshift if subsequent delivery or decoding requires it.
+  const original = hls.levels.findIndex(isOriginalLevel);
+  hls.startLevel =
+    initialBandwidth > 0 && original >= 0 && hls.levels[original].bitrate < estimate * hls.config.abrBandWidthUpFactor
+      ? original
+      : -1;
   const buffered = (_: unknown, data: FragBufferedData) => {
     if (data.frag.type !== 'main') return;
     const bps = transferBandwidth(data.stats);
@@ -278,9 +287,12 @@ export function attachAdaptivePlayback(
   connection?.addEventListener('change', network);
   const timer = setInterval(update, 1000);
   return () => {
+    if (signal.aborted) return;
     controller.abort();
     clearInterval(timer);
     hls.trigger = originalTrigger;
+    if (originalNextLevel) Object.defineProperty(hls, 'nextLevel', originalNextLevel);
+    else Reflect.deleteProperty(hls, 'nextLevel');
     hls.off(events.Events.FRAG_BUFFERED, buffered);
     video.removeEventListener('resize', update);
     video.removeEventListener('timeupdate', update);

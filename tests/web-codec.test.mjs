@@ -225,6 +225,7 @@ function harness({ native = false, paused = false, autoplay = true, original = f
     changeOriginal(value) { playOriginalVideo = value; },
     controlKeydown(event) { handleControlKeydown(event); },
     controlShortcuts(el, media) { return controlShortcuts(el, media); },
+    qualityLabels(el, ids) { return originalRenditionLabels(el, ids); },
     setupRequest(xhr, url) { hlsConfig.xhrSetup(xhr, url); },
     state() { return { avcFallbackAssetId, directFallbackAssetId, pendingResume, rebuildCount, activeSession }; },
   };`, context);
@@ -257,6 +258,41 @@ async function flush(h) {
   h.controls.flush();
   await Promise.resolve();
 }
+
+test('quality labels follow manifest IDs, avoid duplicate bitrates and restore the native formatter', () => {
+  const h = harness();
+  const nativeFormat = (rendition, { showBitrate = true } = {}) =>
+    `${Math.min(rendition.width, rendition.height)}p${showBitrate ? ' (native bitrate)' : ''}`;
+  const menu = Object.assign(Object.create({ formatRendition: nativeFormat }), { mediaRenditionList: [
+    { id: '0', width: 1920, height: 1080, bitrate: 4_200_000 },
+    { id: '1', width: 854, height: 480, bitrate: 850_000 },
+  ] });
+  const action = h.controls.qualityLabels(menu, []);
+  assert.equal(menu.formatRendition(menu.mediaRenditionList[0]), '1080p · 4.2 Mbps');
+  assert.equal(menu.formatRendition(menu.mediaRenditionList[1]), '480p · 850 kbps');
+  action.update(['0']);
+  assert.equal(menu.formatRendition(menu.mediaRenditionList[0]), 'Original (1080p) · 4.2 Mbps');
+  assert.equal(menu.formatRendition({ id: '2', width: 1080, height: 1920, bitrate: NaN }), '1080p');
+  action.destroy();
+  assert.equal(menu.formatRendition, nativeFormat);
+  assert.equal(Object.hasOwn(menu, 'formatRendition'), false);
+});
+
+test('circular fragment abort data cannot turn a quality switch into a fatal player exception', async () => {
+  const h = harness();
+  await flush(h);
+  const api = h.video.api;
+  await api.emit(h.Hls.Events.MANIFEST_PARSED);
+  const frag = { level: 0, sn: 1, loader: { context: {} } };
+  frag.loader.context.frag = frag;
+  assert.throws(() => JSON.stringify(frag), /circular/);
+  await assert.doesNotReject(() => api.emit(h.Hls.Events.ERROR, {
+    type: 'networkError', details: 'aborted', fatal: false, frag, error: new Error('Aborted'),
+  }));
+  assert.equal(h.video.api, api, 'recovery must retain the existing player and playable buffers');
+  assert.equal(h.controls.state().pendingResume, undefined);
+  assert.equal(h.controls.state().avcFallbackAssetId, undefined);
+});
 
 for (const paused of [false, true]) {
   test(`actual player retries HEVC once as authenticated AVC and restores ${paused ? 'paused' : 'playing'} position`, async () => {

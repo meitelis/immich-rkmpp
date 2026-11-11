@@ -1,0 +1,2878 @@
+diff --git a/server/src/controllers/video-stream.controller.ts b/server/src/controllers/video-stream.controller.ts
+index 65c63111fc30f83ae0047a38e5cdd54cbbdb3f8d..b874401a7ec2b41ef75980ed248bf92073ef3023 100644
+--- a/server/src/controllers/video-stream.controller.ts
++++ b/server/src/controllers/video-stream.controller.ts
+@@ -1,10 +1,24 @@
+-import { Controller, Delete, Get, Header, Headers, HttpCode, HttpStatus, Next, Param, Res } from '@nestjs/common';
++import {
++  Controller,
++  Delete,
++  Get,
++  Header,
++  Headers,
++  HttpCode,
++  HttpStatus,
++  Next,
++  Param,
++  Query,
++  Res,
++  StreamableFile,
++} from '@nestjs/common';
+ import { ApiProduces, ApiTags } from '@nestjs/swagger';
+ import type { NextFunction, Response } from 'express';
+ import { HLS_PLAYLIST_CONTENT_TYPE } from 'src/constants.js';
+ import { Endpoint, HistoryBuilder } from 'src/decorators.js';
+ import type { AuthDto } from 'src/dtos/auth.dto.js';
+ import {
++  HlsMainPlaylistQueryDto,
+   HlsPlaylistHeaderDto,
+   HlsSegmentHeaderDto,
+   HlsSegmentParamDto,
+@@ -26,6 +40,31 @@ export class VideoStreamController {
+     private service: HlsService,
+   ) {}
+ 
++  @Get(':id/video/stream/original-info')
++  @Authenticated({ permission: Permission.AssetView, sharedLink: true })
++  @Header('Cache-Control', 'private, no-store')
++  @Endpoint({
++    summary: 'Get original playback capabilities',
++    description: 'Returns indexed codec metadata for checking Original rendition compatibility.',
++    history: new HistoryBuilder().added('v3').alpha('v3'),
++  })
++  getOriginalInfo(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto) {
++    return this.service.getOriginalPlaybackInfo(auth, id);
++  }
++
++  @Get(':id/video/stream/network-probe')
++  @Authenticated({ permission: Permission.AssetView, sharedLink: true })
++  @Header('Cache-Control', 'private, no-store, no-transform')
++  @Header('Content-Type', 'application/octet-stream')
++  @Endpoint({
++    summary: 'Measure playback network capacity',
++    description: 'Returns a bounded uncached random payload over the authenticated media origin.',
++    history: new HistoryBuilder().added('v3').alpha('v3'),
++  })
++  async getOriginalProbe(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto, @Query('bytes') bytes?: string) {
++    return new StreamableFile(await this.service.getOriginalNetworkProbe(auth, id, bytes));
++  }
++
+   @Get(':id/video/stream/main.m3u8')
+   @Authenticated({ permission: Permission.AssetView, sharedLink: true })
+   @Header('Cache-Control', 'no-cache')
+@@ -33,11 +72,16 @@ export class VideoStreamController {
+   @ApiProduces(HLS_PLAYLIST_CONTENT_TYPE)
+   @Endpoint({
+     summary: 'Get HLS main playlist',
+-    description: 'Returns an HLS main playlist with all available variants for the asset.',
++    description:
++      'Returns an HLS main playlist with available variants, optionally restricted to a configured video codec.',
+     history: new HistoryBuilder().added('v3').alpha('v3'),
+   })
+-  getMainPlaylist(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto) {
+-    return this.service.getMainPlaylist(auth, id);
++  getMainPlaylist(
++    @Auth() auth: AuthDto,
++    @Param() { id }: UUIDParamDto,
++    @Query() { videoCodec, strategy, copy }: HlsMainPlaylistQueryDto,
++  ) {
++    return this.service.getMainPlaylist(auth, id, videoCodec, { strategy, copy });
+   }
+ 
+   @Get(':id/video/stream/:sessionId/:variantIndex/playlist.m3u8')
+@@ -54,8 +98,16 @@ export class VideoStreamController {
+     @Auth() auth: AuthDto,
+     @Param() { id, sessionId, variantIndex }: HlsVariantParamDto,
+     @Headers() headers: HlsPlaylistHeaderDto,
++    @Query('strategy') strategy?: string,
+   ) {
+-    return this.service.getMediaPlaylist(auth, id, sessionId, variantIndex, headers[ImmichHeader.HlsPosition]);
++    return this.service.getMediaPlaylist(
++      auth,
++      id,
++      sessionId,
++      variantIndex,
++      headers[ImmichHeader.HlsPosition],
++      strategy,
++    );
+   }
+ 
+   @Get(':id/video/stream/:sessionId/:variantIndex/:filename')
+@@ -72,11 +124,21 @@ export class VideoStreamController {
+     @Headers() headers: HlsSegmentHeaderDto,
+     @Res() res: Response,
+     @Next() next: NextFunction,
++    @Query('strategy') strategy?: string,
+   ) {
+     await sendFile(
+       res,
+       next,
+-      () => this.service.getSegment(auth, id, sessionId, variantIndex, filename, headers[ImmichHeader.HlsInitSegment]),
++      () =>
++        this.service.getSegment(
++          auth,
++          id,
++          sessionId,
++          variantIndex,
++          filename,
++          headers[ImmichHeader.HlsInitSegment],
++          strategy,
++        ),
+       this.logger,
+     );
+   }
+diff --git a/server/src/dtos/streaming.dto.spec.ts b/server/src/dtos/streaming.dto.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..58c9d385cd48713589a70570134a4482c72d8575
+--- /dev/null
++++ b/server/src/dtos/streaming.dto.spec.ts
+@@ -0,0 +1,17 @@
++import { HlsMainPlaylistQueryDto } from 'src/dtos/streaming.dto.js';
++
++describe(HlsMainPlaylistQueryDto.name, () => {
++  it.each([undefined, 'h264', 'hevc'])('accepts the optional codec %s', (videoCodec) => {
++    expect(HlsMainPlaylistQueryDto.create({ videoCodec }).videoCodec).toBe(videoCodec);
++  });
++
++  it.each(['av1', 'vp9', '', 'H264', ['h264', 'hevc'], null])('rejects invalid codec %j', (videoCodec) => {
++    expect(() => HlsMainPlaylistQueryDto.create({ videoCodec })).toThrow();
++  });
++
++  it('allows existing authentication query parameters', () => {
++    expect(HlsMainPlaylistQueryDto.create({ videoCodec: 'h264', key: 'share-key', password: 'share-password' })).toEqual({
++      videoCodec: 'h264',
++    });
++  });
++});
+diff --git a/server/src/dtos/streaming.dto.ts b/server/src/dtos/streaming.dto.ts
+index ee2139ffbf098d3cff3e7a1256f55e682ceb0680..e7d5bf7af4b6b871162854fb48af2191020eb86a 100644
+--- a/server/src/dtos/streaming.dto.ts
++++ b/server/src/dtos/streaming.dto.ts
+@@ -2,6 +2,16 @@ import z from 'zod';
+ import { ImmichHeader } from 'src/enum.js';
+ import { createZodDto } from 'src/zod.js';
+ 
++const HlsMainPlaylistQuerySchema = z.object({
++  // Restricts the advertised ladder without enabling a server-disabled codec.
++  videoCodec: z.enum(['h264', 'hevc']).optional(),
++  strategy: z.literal('memories').optional(),
++  // Explicit MSE capability; the server still validates the indexed source.
++  copy: z.enum(['avc', 'hevc', 'hevc10']).optional(),
++});
++
++export class HlsMainPlaylistQueryDto extends createZodDto(HlsMainPlaylistQuerySchema) {}
++
+ const HlsSessionParamSchema = z.object({
+   id: z.uuidv4(),
+   sessionId: z.uuidv4(),
+diff --git a/server/src/repositories/event.repository.ts b/server/src/repositories/event.repository.ts
+index 5bcd84e6a5fb33c7e0bfb1515c4f7cb8cbfd47b3..a0f03ead6f17af9e074417243418391066d30e4a 100644
+--- a/server/src/repositories/event.repository.ts
++++ b/server/src/repositories/event.repository.ts
+@@ -10,6 +10,7 @@ import { ImmichWorker, JobStatus, MetadataKey, QueueName, UserAvatarColor, UserS
+ import { ConfigRepository } from 'src/repositories/config.repository.js';
+ import { LoggingRepository } from 'src/repositories/logging.repository.js';
+ import type { JobItem, JobSource, UploadFile } from 'src/types.js';
++import type { PlaybackPlan } from 'src/utils/hls-playback.js';
+ 
+ type EmitHandlers = Partial<{ [T in EmitEvent]: Array<EventItem<T>> }>;
+ 
+@@ -104,7 +105,9 @@ type EventMap = {
+   HlsSegmentRequest: [{ sessionId: string; assetId: string; variantIndex: number; segmentIndex: number }];
+   HlsSegmentResult: [{ sessionId: string; variantIndex: number; segmentIndex: number; error?: string }];
+   HlsHeartbeat: [{ sessionId: string; variantIndex?: number; segmentIndex?: number }];
+-  HlsSessionRequest: [{ sessionId: string; assetId: string; ownerId: string }];
++  HlsSessionRequest: [{ sessionId: string; assetId: string; ownerId: string; playback?: PlaybackPlan }];
++  HlsPlaybackPlanRequest: [{ sessionId: string }];
++  HlsPlaybackPlanResult: [{ sessionId: string; playback?: PlaybackPlan; error?: string }];
+   HlsSessionResult: [{ sessionId: string; error?: string }];
+   HlsSessionEnd: [{ sessionId: string }];
+ 
+diff --git a/server/src/repositories/media.repository.ts b/server/src/repositories/media.repository.ts
+index 9f847a147c3c476794310c6e973f56fdcb620835..614a39af57c5dd12130e87e81d605dbab388b6f9 100644
+--- a/server/src/repositories/media.repository.ts
++++ b/server/src/repositories/media.repository.ts
+@@ -38,6 +38,7 @@ import type {
+   VideoPacketInfo,
+ } from 'src/types.js';
+ import { handlePromiseError } from 'src/utils/misc.js';
++import { PlaybackTimeline, type PlaybackSegment } from 'src/utils/hls-playback.js';
+ import { createAffineMatrix } from 'src/utils/transform.js';
+ 
+ const probe = (input: string, options: string[]): Promise<FfprobeData> =>
+@@ -64,6 +65,56 @@ export type ExtractResult = {
+ 
+ @Injectable()
+ export class MediaRepository {
++  // A bounded packet-only pass distinguishes open-GOP presentation starts from
++  // decoder entry points. Never decode the library or buffer the probe output.
++  probePlaybackTimeline(input: string, streamIndex: number): Promise<PlaybackSegment[] | null> {
++    return new Promise((resolve) => {
++      const timeline = new PlaybackTimeline();
++      const child = spawn(
++        'ffprobe',
++        [
++          '-v',
++          'error',
++          '-select_streams',
++          String(streamIndex),
++          '-show_entries',
++          'packet=pts_time,duration_time,flags',
++          '-of',
++          'csv=p=0',
++          input,
++        ],
++        { stdio: ['ignore', 'pipe', 'ignore'] },
++      );
++      let pending = '';
++      let finished = false;
++      const finish = (ok: boolean) => {
++        if (finished) return;
++        finished = true;
++        clearTimeout(timeout);
++        if (!ok) child.kill('SIGKILL');
++        resolve(ok ? timeline.finish() : null);
++      };
++      // Original is optional; a slow source must not hold HLS startup indefinitely.
++      const timeout = setTimeout(() => finish(false), 1500);
++      const line = (value: string) => {
++        const [pts, duration, flags = ''] = value.trim().split(',');
++        timeline.packet(Number.parseFloat(pts), Number.parseFloat(duration), flags);
++      };
++      child.stdout.on('data', (chunk: Buffer) => {
++        pending += chunk.toString();
++        const lines = pending.split('\n');
++        pending = lines.pop()!;
++        for (const item of lines) line(item);
++        if (pending.length > 4096) finish(false);
++      });
++      child.on('error', () => finish(false));
++      child.on('close', (code) => {
++        if (pending) line(pending);
++        finish(code === 0);
++      });
++    });
++  }
++
+   constructor(private logger: LoggingRepository) {
+     this.logger.setContext(MediaRepository.name);
+     // eslint-disable-next-line import-x/no-named-as-default-member
+@@ -73,7 +124,7 @@ export class MediaRepository {
+   }
+ 
+   /**
+-  
++
+   @param input file path to the input image
+   @returns ExtractResult if succeeded, or null if failed
+   */
+@@ -300,6 +351,8 @@ export class MediaRepository {
+           profile:
+             stream.codec_name === 'aac' ? this.parseEnum(AacProfile, stream.profile as string | undefined) : null,
+           bitrate: this.parseInt(stream.bit_rate),
++          channels: this.parseInt(stream.channels),
++          sampleRate: this.parseInt(stream.sample_rate),
+         })),
+     };
+   }
+diff --git a/server/src/repositories/websocket.repository.ts b/server/src/repositories/websocket.repository.ts
+index 2b9b5ebe382aebb6035ca30dd5cfbf1e5974de37..b9d173b66d1846b5bf8e423bc7a38b77825f6eea 100644
+--- a/server/src/repositories/websocket.repository.ts
++++ b/server/src/repositories/websocket.repository.ts
+@@ -24,6 +24,8 @@ export const serverEvents = [
+   'LibraryDelete',
+   'HlsSegmentRequest',
+   'HlsSegmentResult',
++  'HlsPlaybackPlanRequest',
++  'HlsPlaybackPlanResult',
+   'HlsHeartbeat',
+   'HlsSessionRequest',
+   'HlsSessionResult',
+diff --git a/server/src/services/hls.service.spec.ts b/server/src/services/hls.service.spec.ts
+index f0ac7fcb6a6a2d49fe685a8b13b60b8c26db2421..46c0208eef9baecc2f2d11cc325bcadf2a300614 100644
+--- a/server/src/services/hls.service.spec.ts
++++ b/server/src/services/hls.service.spec.ts
+@@ -99,11 +99,11 @@ const sessionId = '00000000-0000-0000-0000-000000000000';
+ const eiffelExpectedMasterAv1 = `#EXTM3U
+ #EXT-X-VERSION:7
+ #EXT-X-INDEPENDENT-SEGMENTS
+-#EXT-X-STREAM-INF:BANDWIDTH=1350000,RESOLUTION=480x852,CODECS="av01.0.04M.08,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=24.910
++#EXT-X-STREAM-INF:BANDWIDTH=1350000,RESOLUTION=480x854,CODECS="av01.0.04M.08,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=24.910
+ ${sessionId}/0/playlist.m3u8
+-#EXT-X-STREAM-INF:BANDWIDTH=1620000,RESOLUTION=480x852,CODECS="hvc1.1.6.L90.B0,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=24.910
++#EXT-X-STREAM-INF:BANDWIDTH=1620000,RESOLUTION=480x854,CODECS="hvc1.1.6.L90.B0,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=24.910
+ ${sessionId}/1/playlist.m3u8
+-#EXT-X-STREAM-INF:BANDWIDTH=3375000,RESOLUTION=480x852,CODECS="avc1.64001e,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=24.910
++#EXT-X-STREAM-INF:BANDWIDTH=3375000,RESOLUTION=480x854,CODECS="avc1.64001e,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=24.910
+ ${sessionId}/2/playlist.m3u8
+ #EXT-X-STREAM-INF:BANDWIDTH=2700000,RESOLUTION=720x1280,CODECS="av01.0.05M.08,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=24.910
+ ${sessionId}/3/playlist.m3u8
+@@ -122,9 +122,9 @@ ${sessionId}/8/playlist.m3u8
+ const eiffelExpectedMasterNoAv1 = `#EXTM3U
+ #EXT-X-VERSION:7
+ #EXT-X-INDEPENDENT-SEGMENTS
+-#EXT-X-STREAM-INF:BANDWIDTH=1620000,RESOLUTION=480x852,CODECS="hvc1.1.6.L90.B0,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=24.910
++#EXT-X-STREAM-INF:BANDWIDTH=1620000,RESOLUTION=480x854,CODECS="hvc1.1.6.L90.B0,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=24.910
+ ${sessionId}/1/playlist.m3u8
+-#EXT-X-STREAM-INF:BANDWIDTH=3375000,RESOLUTION=480x852,CODECS="avc1.64001e,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=24.910
++#EXT-X-STREAM-INF:BANDWIDTH=3375000,RESOLUTION=480x854,CODECS="avc1.64001e,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=24.910
+ ${sessionId}/2/playlist.m3u8
+ #EXT-X-STREAM-INF:BANDWIDTH=3375000,RESOLUTION=720x1280,CODECS="hvc1.1.6.L93.B0,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=24.910
+ ${sessionId}/4/playlist.m3u8
+@@ -139,11 +139,11 @@ ${sessionId}/8/playlist.m3u8
+ const waterfallExpectedMasterAv1 = `#EXTM3U
+ #EXT-X-VERSION:7
+ #EXT-X-INDEPENDENT-SEGMENTS
+-#EXT-X-STREAM-INF:BANDWIDTH=1350000,RESOLUTION=480x852,CODECS="av01.0.04M.08,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=29.830
++#EXT-X-STREAM-INF:BANDWIDTH=1350000,RESOLUTION=480x854,CODECS="av01.0.04M.08,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=29.830
+ ${sessionId}/0/playlist.m3u8
+-#EXT-X-STREAM-INF:BANDWIDTH=1620000,RESOLUTION=480x852,CODECS="hvc1.1.6.L90.B0,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=29.830
++#EXT-X-STREAM-INF:BANDWIDTH=1620000,RESOLUTION=480x854,CODECS="hvc1.1.6.L90.B0,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=29.830
+ ${sessionId}/1/playlist.m3u8
+-#EXT-X-STREAM-INF:BANDWIDTH=3375000,RESOLUTION=480x852,CODECS="avc1.64001f,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=29.830
++#EXT-X-STREAM-INF:BANDWIDTH=3375000,RESOLUTION=480x854,CODECS="avc1.64001f,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=29.830
+ ${sessionId}/2/playlist.m3u8
+ #EXT-X-STREAM-INF:BANDWIDTH=2700000,RESOLUTION=720x1280,CODECS="av01.0.05M.08,mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=29.830
+ ${sessionId}/3/playlist.m3u8
+@@ -223,6 +223,38 @@ describe(HlsService.name, () => {
+       await expect(sut.getMainPlaylist(auth, assetId)).resolves.toBe(eiffelExpectedMasterNoAv1);
+     });
+ 
++    it.each([
++      { videoCodec: 'h264' as const, codecString: 'avc1.', excluded: ['hvc1.', 'av01.'], variantIndices: [2, 5, 8] },
++      { videoCodec: 'hevc' as const, codecString: 'hvc1.', excluded: ['avc1.', 'av01.'], variantIndices: [1, 4, 7] },
++    ])('restricts the master to the requested $videoCodec codec with stable variant indices', async (testCase) => {
++      setup(eiffelTower, allCodecs);
++      const playlist = await sut.getMainPlaylist(auth, assetId, testCase.videoCodec);
++      expect(playlist).toContain(`CODECS="${testCase.codecString}`);
++      for (const codec of testCase.excluded) {
++        expect(playlist).not.toContain(codec);
++      }
++      expect(playlist.match(/#EXT-X-STREAM-INF:/g)).toHaveLength(testCase.variantIndices.length);
++      for (const index of testCase.variantIndices) {
++        expect(playlist).toContain(`${sessionId}/${index}/playlist.m3u8`);
++      }
++    });
++
++    it.each([
++      { configured: [VideoCodec.Hevc], requested: 'h264' as const },
++      { configured: [VideoCodec.H264], requested: 'hevc' as const },
++      { configured: [], requested: undefined },
++    ])('does not create a session when the requested codec has no configured variants: $requested', async (testCase) => {
++      setup(eiffelTower, testCase.configured);
++      await expect(sut.getMainPlaylist(auth, assetId, testCase.requested)).rejects.toBeInstanceOf(NotFoundException);
++      expect(mocks.websocket.serverSend).not.toHaveBeenCalled();
++    });
++
++    it('does not create a session when no configured resolution is available', async () => {
++      setup(eiffelTower, [VideoCodec.H264, VideoCodec.Hevc], []);
++      await expect(sut.getMainPlaylist(auth, assetId, 'h264')).rejects.toBeInstanceOf(NotFoundException);
++      expect(mocks.websocket.serverSend).not.toHaveBeenCalled();
++    });
++
+     it('offers every resolution up to the source and derives 4K codec levels (waterfall, 4K, 29.83fps)', async () => {
+       setup(waterfall, allCodecs, allResolutions);
+       await expect(sut.getMainPlaylist(auth, assetId)).resolves.toBe(waterfallExpectedMasterAv1);
+diff --git a/server/src/services/hls.service.ts b/server/src/services/hls.service.ts
+index 5282947cc05ae114a13b4c2b4a6d19f17df18696..093d3fdb76429d8b08ef01f830b50ed7c3a0b2eb 100644
+--- a/server/src/services/hls.service.ts
++++ b/server/src/services/hls.service.ts
+@@ -1,28 +1,54 @@
+ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+ import { constants } from 'node:fs';
++import { randomBytes } from 'node:crypto';
+ import { join } from 'node:path';
++import type { ArgOf } from 'src/repositories/event.repository.js';
++import type { HlsMainPlaylistQueryDto } from 'src/dtos/streaming.dto.js';
++import type { VideoPacketInfo, VideoStreamInfo } from 'src/types.js';
+ import { HLS_SEGMENT_DURATION, HLS_SEGMENT_FILENAME_REGEX, HLS_VARIANTS, HLS_VERSION } from 'src/constants.js';
+ import { StorageCore } from 'src/cores/storage.core.js';
+ import { OnEvent } from 'src/decorators.js';
+ import { AuthDto } from 'src/dtos/auth.dto.js';
+ import { ConfigFFmpegDto } from 'src/dtos/config.dto.js';
+ import { CacheControl, ImmichWorker, Permission } from 'src/enum.js';
+-import type { ArgOf } from 'src/repositories/event.repository.js';
+ import { BaseService } from 'src/services/base.service.js';
+-import type { VideoPacketInfo, VideoStreamInfo } from 'src/types.js';
+ import { PendingEvents } from 'src/utils/event.js';
+ import { ImmichFileResponse } from 'src/utils/file.js';
+ import { getCodecString, getOutputSize } from 'src/utils/media.js';
++import {
++  audioSegments,
++  copyCapability,
++  originalVideoCodec,
++  playbackPlaylist,
++  type PlaybackPlan,
++} from 'src/utils/hls-playback.js';
+ 
+ type AssetWithStreamInfo = { videoStream: VideoStreamInfo & { timeBase: number }; packets: VideoPacketInfo };
+ type Segmentation = { fps: number; framesPerSegment: number; segmentCount: number; segmentDuration: number };
+-type ApiSession = { lastRequestedSegment: number | null; lastVariantIndex: number | null };
++type ApiSession = { lastRequestedSegment: number | null; lastVariantIndex: number | null; playback?: PlaybackPlan };
+ 
+ @Injectable()
+ export class HlsService extends BaseService {
+   private pendingSegments = new PendingEvents<'HlsSegmentResult'>({ timeoutMs: 15_000 });
+   private pendingSessions = new PendingEvents<'HlsSessionResult'>({ timeoutMs: 5000 });
+   private sessions = new Map<string, ApiSession>();
++  private pendingPlans = new PendingEvents<'HlsPlaybackPlanResult'>({ timeoutMs: 5000 });
++
++  @OnEvent({ name: 'HlsPlaybackPlanResult', server: true, workers: [ImmichWorker.Api] })
++  onPlaybackPlan(event: ArgOf<'HlsPlaybackPlanResult'>) {
++    this.pendingPlans.complete(event.sessionId, event);
++  }
++
++  private async getPlaybackPlan(sessionId: string) {
++    const session = this.trackSession(sessionId);
++    if (session.playback) return session.playback;
++    const pending = this.pendingPlans.wait(sessionId);
++    this.websocketRepository.serverSend('HlsPlaybackPlanRequest', { sessionId });
++    const result = await pending;
++    if (!result.playback) throw new NotFoundException('Playback plan not found');
++    session.playback = result.playback;
++    return result.playback;
++  }
+ 
+   @OnEvent({ name: 'HlsSessionResult', server: true, workers: [ImmichWorker.Api] })
+   onSessionResult(event: ArgOf<'HlsSessionResult'>) {
+@@ -46,7 +72,42 @@ export class HlsService extends BaseService {
+     this.pendingSegments.complete(this.getSegmentKey(event), event);
+   }
+ 
+-  async getMainPlaylist(auth: AuthDto, assetId: string) {
++  // Indexed codec metadata for the browser's Original eligibility check.
++  // Reuses indexed streams; no FFprobe, no original path and no transcoder start.
++  async getOriginalPlaybackInfo(auth: AuthDto, assetId: string) {
++    await this.requireAccess({ auth, permission: Permission.AssetView, ids: [assetId] });
++    const asset = await this.videoStreamRepository.getForTranscoding(assetId);
++    if (!asset) {
++      throw new NotFoundException('Video metadata is not available');
++    }
++    const video = asset.videoStream;
++    return {
++      videoCodec: video.codecName,
++      videoProfile: video.profile,
++      videoLevel: video.level,
++      pixelFormat: video.pixelFormat,
++      colorTransfer: video.colorTransfer,
++      dvProfile: video.dvProfile,
++      rotation: video.rotation,
++    };
++  }
++
++  // Incompressible same-origin response: bounded network measurement without
++  // reading a private original or creating a hardware transcode session.
++  async getOriginalNetworkProbe(auth: AuthDto, assetId: string, bytes?: string) {
++    await this.requireAccess({ auth, permission: Permission.AssetView, ids: [assetId] });
++    const length = bytes === undefined ? 1024 * 1024 : Number(bytes);
++    if (![65536, 131072, 393216, 1048576, 1572864].includes(length))
++      throw new BadRequestException('Invalid probe size');
++    return randomBytes(length);
++  }
++
++  async getMainPlaylist(
++    auth: AuthDto,
++    assetId: string,
++    videoCodec?: HlsMainPlaylistQueryDto['videoCodec'],
++    options?: Pick<HlsMainPlaylistQueryDto, 'strategy' | 'copy'>,
++  ) {
+     await this.requireAccess({ auth, permission: Permission.AssetView, ids: [assetId] });
+     const { ffmpeg } = await this.getConfig({ withCache: true });
+     if (!ffmpeg.realtime.enabled) {
+@@ -61,14 +122,32 @@ export class HlsService extends BaseService {
+     // Sharing the sessionId allows only one microservices worker to successfully insert to the session table.
+     // The microservices worker that creates a session owns the transcoding lifecycle for it.
+     const sessionId = this.cryptoRepository.randomUUID();
+-    this.websocketRepository.serverSend('HlsSessionRequest', { sessionId, assetId, ownerId: auth.user.id });
++    const playback =
++      options?.strategy === 'memories' && ffmpeg.accel === 'rkmpp'
++        ? await this.preparePlaybackPlan(assetId, options.copy, videoCodec)
++        : undefined;
++    // Validate the ladder before creating a session that would have no usable variants.
++    const playlist = this.generateMainPlaylist(sessionId, ffmpeg, asset, videoCodec, playback);
++    this.websocketRepository.serverSend('HlsSessionRequest', {
++      sessionId,
++      assetId,
++      ownerId: auth.user.id,
++      ...(playback ? { playback } : {}),
++    });
+     await this.pendingSessions.wait(sessionId);
+-    this.trackSession(sessionId);
++    this.trackSession(sessionId).playback = playback;
+ 
+-    return this.generateMainPlaylist(sessionId, ffmpeg, asset);
++    return playlist;
+   }
+ 
+-  async getMediaPlaylist(auth: AuthDto, assetId: string, sessionId: string, variantIndex: number, position?: number) {
++  async getMediaPlaylist(
++    auth: AuthDto,
++    assetId: string,
++    sessionId: string,
++    variantIndex: number,
++    position?: number,
++    strategy?: string,
++  ) {
+     await this.requireAccess({ auth, permission: Permission.AssetView, ids: [assetId] });
+ 
+     const asset = await this.videoStreamRepository.getForMediaPlaylist(assetId, sessionId);
+@@ -76,6 +155,19 @@ export class HlsService extends BaseService {
+       throw new NotFoundException('Asset not found or metadata not yet ready for streaming');
+     }
+ 
++    if (strategy === 'memories') {
++      const plan = await this.getPlaybackPlan(sessionId);
++      this.validatePlaybackVariant(plan, variantIndex);
++      const isAudio = variantIndex === HLS_VARIANTS.length + 1;
++      const segments = isAudio ? audioSegments(plan.duration) : plan.segments;
++      if (segments) {
++        // The actual upcoming fragment, sent on its init request, owns startup.
++        // Prewarming here can restart a worker at the wrong grid position.
++        return this.strategyUrls(playbackPlaylist(segments, !isAudio && variantIndex !== HLS_VARIANTS.length));
++      }
++      return this.strategyUrls(this.generateMediaPlaylist(asset, this.getSegmentation(asset)));
++    }
++
+     const segmentation = this.getSegmentation(asset);
+     const hintedSegment = position === undefined ? undefined : this.positionToSegmentIndex(segmentation, position);
+     this.prewarmVariant(assetId, sessionId, variantIndex, hintedSegment);
+@@ -90,11 +182,12 @@ export class HlsService extends BaseService {
+     variantIndex: number,
+     filename: string,
+     initSegment?: number,
++    strategy?: string,
+   ) {
+     await this.requireAccess({ auth, permission: Permission.AssetView, ids: [assetId] });
+ 
+     const session = await this.videoStreamRepository.getSession(sessionId);
+-    if (!session) {
++    if (!session || session.assetId !== assetId) {
+       throw new NotFoundException('Session not found');
+     }
+ 
+@@ -106,8 +199,22 @@ export class HlsService extends BaseService {
+       cacheControl: CacheControl.PrivateWithCache,
+     });
+ 
+-    const apiSession = this.trackSession(sessionId, variantIndex);
+-    const segmentIndex = this.getSegmentIndex(apiSession, filename, initSegment);
++    const plan = strategy === 'memories' ? await this.getPlaybackPlan(sessionId) : undefined;
++    if (plan) this.validatePlaybackVariant(plan, variantIndex);
++    const isAudio = !!plan && variantIndex === HLS_VARIANTS.length + 1;
++    // Memories has independent producers per rendition. Concurrent requests for
++    // another quality must not invalidate this one's pending init or fragments.
++    const segmentIndex = plan
++      ? filename.endsWith('.mp4')
++        ? (initSegment ?? 0)
++        : Number(HLS_SEGMENT_FILENAME_REGEX.exec(filename)![1])
++      : this.getSegmentIndex(this.trackSession(sessionId, variantIndex), filename, initSegment);
++    if (plan) {
++      const segments = isAudio ? audioSegments(plan.duration) : plan.segments;
++      const count = segments?.length ?? Math.ceil(plan.duration / HLS_SEGMENT_DURATION);
++      if (segmentIndex < 0 || segmentIndex >= count)
++        throw new NotFoundException('Segment is outside the playback timeline');
++    }
+     this.websocketRepository.serverSend('HlsHeartbeat', { sessionId, variantIndex, segmentIndex });
+ 
+     if (await this.storageRepository.checkFileExists(path, constants.R_OK)) {
+@@ -126,34 +233,125 @@ export class HlsService extends BaseService {
+     this.websocketRepository.serverSend('HlsSessionEnd', { sessionId });
+   }
+ 
+-  private generateMainPlaylist(sessionId: string, ffmpeg: ConfigFFmpegDto, asset: AssetWithStreamInfo) {
++  private generateMainPlaylist(
++    sessionId: string,
++    ffmpeg: ConfigFFmpegDto,
++    asset: AssetWithStreamInfo,
++    videoCodec?: HlsMainPlaylistQueryDto['videoCodec'],
++    playback?: PlaybackPlan,
++  ) {
+     const fps = (asset.packets.packetCount * asset.videoStream.timeBase) / asset.packets.totalDuration;
+     const roundedFps = fps.toFixed(3);
+     const sourceResolution = Math.min(asset.videoStream.height, asset.videoStream.width);
+-    const targetResolution = Math.max(sourceResolution, HLS_VARIANTS[0].resolution);
+-    const lines = ['#EXTM3U', `#EXT-X-VERSION:${HLS_VERSION}`, '#EXT-X-INDEPENDENT-SEGMENTS'];
++    const lines = [
++      '#EXTM3U',
++      `#EXT-X-VERSION:${HLS_VERSION}`,
++      ...(!playback?.original ? ['#EXT-X-INDEPENDENT-SEGMENTS'] : []),
++    ];
++    if (playback?.audio)
++      lines.push(
++        `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Audio",DEFAULT=YES,AUTOSELECT=YES,URI="${sessionId}/${HLS_VARIANTS.length + 1}/playlist.m3u8?strategy=memories"`,
++      );
++    const audio = playback ? (playback.audio ? ',mp4a.40.2' : '') : ',mp4a.40.2';
++    const audioGroup = playback?.audio ? ',AUDIO="audio"' : '';
+     const { videoCodecs, resolutions } = ffmpeg.realtime;
++    // The highest configured rung at or above the source is a full-source
++    // rendition, not an upscale. E.g. 3200x1800 uses the 2160 rung, which
++    // both this playlist and the worker clamp to the true 1800p dimensions.
++    // Do not change variant indices: the worker resolves them via HLS_VARIANTS.
++    const enclosingResolution = HLS_VARIANTS.map(({ resolution }) => resolution).find(
++      (resolution) => resolution >= sourceResolution && resolutions.includes(resolution),
++    );
++    const targetResolution = enclosingResolution ?? Math.max(sourceResolution, HLS_VARIANTS[0].resolution);
+     for (let i = 0; i < HLS_VARIANTS.length; i++) {
+       const { resolution, bitrate, codec } = HLS_VARIANTS[i];
+-      if (resolution > targetResolution || !videoCodecs.includes(codec) || !resolutions.includes(resolution)) {
++      if (playback && codec !== 'h264' && codec !== 'hevc') continue;
++      if (
++        resolution > targetResolution ||
++        !videoCodecs.includes(codec) ||
++        !resolutions.includes(resolution) ||
++        (videoCodec !== undefined && codec !== videoCodec)
++      ) {
+         continue;
+       }
+-      const { width, height } = getOutputSize(asset.videoStream, resolution);
++      const { width, height } = getOutputSize(asset.videoStream, Math.min(resolution, sourceResolution));
+       const codecString = getCodecString(codec, width, height, fps);
++      if (playback) {
++        const source = playback.original?.bitrate;
++        playback.bitrates[i] = source
++          ? Math.max(128_000, Math.min(bitrate, source * 0.8 * (resolution / sourceResolution) ** 1.3))
++          : bitrate;
++      }
++      const bandwidth = playback ? (playback.bitrates[i] + (playback.audio ? 192_000 : 0)) * 1.35 : bitrate * 1.35;
+       lines.push(
+-        `#EXT-X-STREAM-INF:BANDWIDTH=${Math.round(bitrate * 1.35)},RESOLUTION=${width}x${height},CODECS="${codecString},mp4a.40.2",VIDEO-RANGE=SDR,FRAME-RATE=${roundedFps}`,
+-        `${sessionId}/${i}/playlist.m3u8`,
++        `#EXT-X-STREAM-INF:BANDWIDTH=${Math.round(bandwidth)},RESOLUTION=${width}x${height},CODECS="${codecString}${audio}",VIDEO-RANGE=SDR,FRAME-RATE=${roundedFps}${audioGroup}`,
++        `${sessionId}/${i}/playlist.m3u8${playback ? '?strategy=memories' : ''}`,
++      );
++    }
++    if (playback?.original) {
++      const bitrate = Math.max(
++        playback.original.bitrate,
++        ...Object.values(playback.bitrates).map((value) => value * 1.01),
++      );
++      lines.push(
++        `#EXT-X-STREAM-INF:BANDWIDTH=${Math.ceil((bitrate + (playback.audio ? 192_000 : 0)) * 1.35)},RESOLUTION=${asset.videoStream.width}x${asset.videoStream.height},CODECS="${playback.original.codec}${audio}",VIDEO-RANGE=SDR,FRAME-RATE=${roundedFps}${audioGroup}`,
++        `${sessionId}/${HLS_VARIANTS.length}/playlist.m3u8?strategy=memories&original=1`,
+       );
+     }
+     lines.push('');
+ 
+-    if (lines.length === 4) {
++    if (!lines.some((line) => line.startsWith('#EXT-X-STREAM-INF:'))) {
+       throw new NotFoundException('No supported variants for this video');
+     }
+ 
+     return lines.join('\n');
+   }
+ 
++  private strategyUrls(playlist: string) {
++    return playlist
++      .replace(/init\.mp4/g, 'init.mp4?strategy=memories')
++      .replace(/seg_(\d+)\.m4s/g, 'seg_$1.m4s?strategy=memories');
++  }
++
++  private validatePlaybackVariant(plan: PlaybackPlan, index: number) {
++    if (
++      plan.bitrates[index] !== undefined ||
++      (index === HLS_VARIANTS.length && plan.original) ||
++      (index === HLS_VARIANTS.length + 1 && plan.audio)
++    )
++      return;
++    throw new NotFoundException('Variant is not available in this session');
++  }
++
++  private async preparePlaybackPlan(
++    assetId: string,
++    copy?: HlsMainPlaylistQueryDto['copy'],
++    videoCodec?: string,
++  ): Promise<PlaybackPlan> {
++    const asset = await this.videoStreamRepository.getForTranscoding(assetId);
++    if (!asset) throw new NotFoundException('Video metadata unavailable');
++    const fps = (asset.packets.packetCount * asset.videoStream.timeBase) / asset.packets.totalDuration;
++    const duration = asset.packets.outputFrames / fps;
++    if (!Number.isFinite(duration) || duration <= 0) throw new NotFoundException('Invalid video duration');
++    const codec = originalVideoCodec(asset.videoStream);
++    // An AVC-only retry must never re-advertise a failed HEVC Original.
++    const eligible =
++      codec && copy === copyCapability(codec) && (!videoCodec || asset.videoStream.codecName === videoCodec);
++    const segments = eligible
++      ? await this.mediaRepository.probePlaybackTimeline(asset.originalPath, asset.videoStream.index)
++      : null;
++    const sourceRate =
++      asset.videoStream.bitrate || Math.max(0, asset.format.bitrate - (asset.audioStream?.bitrate ?? 0));
++    const original = segments && codec && sourceRate > 0 ? { codec, bitrate: sourceRate } : undefined;
++    return {
++      segments: original ? segments : null,
++      audio: !!asset.audioStream,
++      duration: original ? segments!.at(-1)!.start + segments!.at(-1)!.duration : duration,
++      original,
++      bitrates: {},
++    };
++  }
++
+   private getSegmentation({ videoStream, packets }: AssetWithStreamInfo): Segmentation {
+     const fps = (packets.packetCount * videoStream.timeBase) / packets.totalDuration;
+     const framesPerSegment = Math.ceil(HLS_SEGMENT_DURATION * fps);
+@@ -218,14 +416,15 @@ export class HlsService extends BaseService {
+     return segmentIndex;
+   }
+ 
+-  private trackSession(id: string, variantIndex: number | null = null) {
++  private trackSession(id: string, variantIndex?: number): ApiSession {
+     const session = this.sessions.get(id);
+     if (!session) {
+-      const newSession = { lastRequestedSegment: null, lastVariantIndex: variantIndex };
++      const newSession = { lastRequestedSegment: null, lastVariantIndex: variantIndex ?? null };
+       this.sessions.set(id, newSession);
+       return newSession;
+     }
+ 
++    if (variantIndex === undefined) return session;
+     if (session.lastVariantIndex !== null && session.lastVariantIndex !== variantIndex) {
+       this.pendingSegments.rejectByPrefix(`${id}:${session.lastVariantIndex}:`, 'Variant changed');
+     }
+diff --git a/server/src/services/transcoding.service.ts b/server/src/services/transcoding.service.ts
+index b0f0c7fa85343c15a43e61a531d86ef03506e893..ec5f9b458a3ea5a6b104a28b9998be1a590283b4 100644
+--- a/server/src/services/transcoding.service.ts
++++ b/server/src/services/transcoding.service.ts
+@@ -1,6 +1,8 @@
+ import { Injectable } from '@nestjs/common';
+ import { ChildProcess } from 'node:child_process';
+ import { join } from 'node:path';
++import type { ArgOf } from 'src/repositories/event.repository.js';
++import type { AudioStreamInfo, VideoInterfaces } from 'src/types.js';
+ import {
+   HLS_BACKPRESSURE_PAUSE_SEGMENTS,
+   HLS_BACKPRESSURE_RESUME_SEGMENTS,
+@@ -14,14 +16,17 @@ import {
+ } from 'src/constants.js';
+ import { StorageCore } from 'src/cores/storage.core.js';
+ import { OnEvent, OnJob } from 'src/decorators.js';
+-import { DatabaseLock, ImmichWorker, JobName, QueueName, TranscodeTarget } from 'src/enum.js';
+-import type { ArgOf } from 'src/repositories/event.repository.js';
++import { AacProfile, DatabaseLock, ImmichWorker, JobName, QueueName, TranscodeTarget } from 'src/enum.js';
+ import { BaseService } from 'src/services/base.service.js';
+-import type { VideoInterfaces } from 'src/types.js';
+ import { isVideoStreamSessionPkConstraint } from 'src/utils/database.js';
+ import { BaseConfig } from 'src/utils/media.js';
++import { copyVideoArgs, sharedAudioArgs, videoSeek, type PlaybackPlan } from 'src/utils/hls-playback.js';
+ 
+ type Session = {
++  playback?: PlaybackPlan;
++  renditions?: Map<number, Session>;
++  parent?: Session;
++  audioProbe: Promise<AudioStreamInfo | null> | null;
+   assetId: string;
+   expiresAt: Date;
+   id: string;
+@@ -32,6 +37,7 @@ type Session = {
+   paused: boolean;
+   process: ChildProcess | null;
+   starting: boolean;
++  startGeneration: number;
+   startSegment: number | null;
+   variantIndex: number | null;
+ };
+@@ -63,11 +69,13 @@ export class TranscodingService extends BaseService {
+   }
+ 
+   @OnEvent({ name: 'HlsSessionRequest', server: true, workers: [ImmichWorker.Microservices] })
+-  async onSessionRequest({ assetId, sessionId, ownerId }: ArgOf<'HlsSessionRequest'>) {
++  async onSessionRequest({ assetId, sessionId, ownerId, playback }: ArgOf<'HlsSessionRequest'>) {
+     try {
+       const expiresAt = new Date(Date.now() + HLS_LEASE_DURATION_MS);
+       await this.videoStreamRepository.createSession({ id: sessionId, assetId, expiresAt });
+       this.sessions.set(sessionId, {
++        audioProbe: null,
++        playback,
+         assetId,
+         expiresAt,
+         id: sessionId,
+@@ -78,6 +86,7 @@ export class TranscodingService extends BaseService {
+         paused: false,
+         process: null,
+         starting: false,
++        startGeneration: 0,
+         startSegment: null,
+         variantIndex: null,
+       });
+@@ -92,6 +101,13 @@ export class TranscodingService extends BaseService {
+     }
+   }
+ 
++  @OnEvent({ name: 'HlsPlaybackPlanRequest', server: true, workers: [ImmichWorker.Microservices] })
++  onPlaybackPlanRequest({ sessionId }: ArgOf<'HlsPlaybackPlanRequest'>) {
++    const session = this.sessions.get(sessionId);
++    if (session)
++      this.websocketRepository.serverSend('HlsPlaybackPlanResult', { sessionId, playback: session.playback });
++  }
++
+   @OnEvent({ name: 'HlsSessionEnd', server: true, workers: [ImmichWorker.Microservices] })
+   async onSessionEnd({ sessionId }: ArgOf<'HlsSessionEnd'>) {
+     const session = this.sessions.get(sessionId);
+@@ -104,12 +120,13 @@ export class TranscodingService extends BaseService {
+       this.cleanupInterval = null;
+     }
+     this.stopTranscode(session);
++    for (const rendition of session.renditions?.values() ?? []) this.stopTranscode(rendition);
+     await this.removeSessionDir(session);
+     await this.videoStreamRepository.deleteSession(sessionId);
+   }
+ 
+   @OnEvent({ name: 'HlsHeartbeat', server: true, workers: [ImmichWorker.Microservices] })
+-  async onHeartbeat({ sessionId, segmentIndex }: ArgOf<'HlsHeartbeat'>) {
++  async onHeartbeat({ sessionId, variantIndex, segmentIndex }: ArgOf<'HlsHeartbeat'>) {
+     const session = this.sessions.get(sessionId);
+     if (!session) {
+       return;
+@@ -117,9 +134,17 @@ export class TranscodingService extends BaseService {
+ 
+     session.lastActivityTime = new Date();
+ 
+-    if (segmentIndex !== undefined) {
+-      session.lastClientRequestedSegment = segmentIndex;
+-      this.applyBackpressure(session);
++    const rendition = session.playback
++      ? variantIndex === undefined
++        ? undefined
++        : session.renditions?.get(variantIndex)
++      : session;
++    if (rendition) {
++      rendition.lastActivityTime = new Date();
++      if (segmentIndex !== undefined) {
++        rendition.lastClientRequestedSegment = segmentIndex;
++        this.applyBackpressure(rendition);
++      }
+     }
+ 
+     const remaining = session.expiresAt.getTime() - Date.now();
+@@ -132,10 +157,36 @@ export class TranscodingService extends BaseService {
+ 
+   @OnEvent({ name: 'HlsSegmentRequest', server: true, workers: [ImmichWorker.Microservices] })
+   async onSegmentRequest({ sessionId, variantIndex, segmentIndex }: ArgOf<'HlsSegmentRequest'>) {
+-    const session = this.sessions.get(sessionId);
++    let session = this.sessions.get(sessionId);
+     if (!session) {
+       return;
+     }
++    if (session.playback) {
++      if (variantIndex === HLS_VARIANTS.length + 1 && !session.playback.audio) return;
++      // Like Memories, each requested quality owns its producer. A cold ABR
++      // transition must not kill the producer serving another in-flight level.
++      const parent = session;
++      parent.renditions ??= new Map();
++      let rendition = parent.renditions.get(variantIndex);
++      if (!rendition) {
++        rendition = {
++          ...parent,
++          parent,
++          renditions: undefined,
++          process: null,
++          starting: false,
++          startGeneration: 0,
++          startSegment: null,
++          variantIndex,
++          lastCompletedSegment: null,
++          lastClientRequestedSegment: null,
++          paused: false,
++        };
++        parent.renditions.set(variantIndex, rendition);
++      }
++      session = rendition;
++      session.lastActivityTime = new Date();
++    }
+ 
+     session.variantIndex ??= variantIndex;
+     session.startSegment ??= segmentIndex;
+@@ -154,18 +205,38 @@ export class TranscodingService extends BaseService {
+       return;
+     }
+ 
++    const generation = ++session.startGeneration;
+     session.starting = true;
+     try {
+-      const process = await this.startTranscode(session, variantIndex, segmentIndex);
++      const process = await this.startTranscode(session, variantIndex, segmentIndex, generation);
+       if (process) {
+-        session.process = process;
++        if (this.isCurrentStart(session, generation)) {
++          session.process = process;
++        } else {
++          // A session can close or switch during the promise continuation.
++          process.kill('SIGKILL');
++        }
+       }
+     } finally {
+-      session.starting = false;
++      // A superseded start must not unlock another start still awaiting metadata.
++      if (this.isCurrentStart(session, generation)) {
++        session.starting = false;
++      }
+     }
+   }
+ 
++  private isCurrentStart(session: Session, generation: number) {
++    return (
++      this.sessions.get(session.id) === (session.parent ?? session) &&
++      (!session.parent || session.parent.renditions?.get(session.variantIndex!) === session) &&
++      session.startGeneration === generation
++    );
++  }
++
+   private applyBackpressure(session: Session) {
++    // Pacing leaves asynchronous RKMPP operations running. SIGSTOP can lose an
++    // in-flight frame. Legacy clients keep their existing production policy.
++    if (session.playback) return;
+     if (session.lastCompletedSegment === null || session.lastClientRequestedSegment === null) {
+       return;
+     }
+@@ -178,26 +249,40 @@ export class TranscodingService extends BaseService {
+     }
+   }
+ 
+-  private async startTranscode(session: Session, variantIndex: number, startSegment: number) {
++  private async startTranscode(session: Session, variantIndex: number, startSegment: number, generation: number) {
+     const { ffmpeg } = await this.getConfig({ withCache: true });
++    if (!this.isCurrentStart(session, generation)) {
++      return;
++    }
+ 
+     const asset = await this.videoStreamRepository.getForTranscoding(session.assetId);
+-    if (!asset) {
+-      this.logger.error(`Asset ${session.assetId} not found for HLS transcoding`);
++    if (
++      !this.isCurrentStart(session, generation) ||
++      session.variantIndex !== variantIndex ||
++      session.startSegment !== startSegment
++    ) {
+       return;
+     }
+-
+-    if (session.variantIndex !== variantIndex || session.startSegment !== startSegment) {
++    if (!asset) {
++      this.logger.error(`Asset ${session.assetId} not found for HLS transcoding`);
+       return;
+     }
+ 
+     const variant = HLS_VARIANTS[variantIndex];
+-    if (!variant) {
++    const plan = session.playback;
++    const isOriginal = !!plan?.original && variantIndex === HLS_VARIANTS.length;
++    const isAudio = !!plan?.audio && variantIndex === HLS_VARIANTS.length + 1;
++    if ((!variant && !isOriginal && !isAudio) || (plan && variant && plan.bitrates[variantIndex] === undefined)) {
+       this.logger.error(`Variant ${variantIndex} out of range for asset ${session.assetId}`);
+       await this.failSession(session, `Invalid variant index ${variantIndex}`);
+       return;
+     }
+ 
++    const audio = plan ? asset.audioStream : await this.getSessionAudio(session, asset.audioStream, asset.originalPath);
++    if (!this.isCurrentStart(session, generation)) {
++      return;
++    }
++
+     const variantDir = StorageCore.getHlsVariantFolder({
+       ownerId: session.ownerId,
+       sessionId: session.id,
+@@ -205,14 +290,29 @@ export class TranscodingService extends BaseService {
+     });
+     this.storageRepository.mkdirSync(variantDir);
+ 
++    if (isOriginal || isAudio) {
++      const args = isOriginal
++        ? copyVideoArgs(asset.originalPath, asset.videoStream, plan!.segments!, startSegment, variantDir, join)
++        : sharedAudioArgs(asset.originalPath, asset.audioStream!, plan!.duration, startSegment, variantDir, join);
++      const process = this.processRepository.spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
++      this.attachProcessHandlers(process, session, variantIndex);
++      return process;
++    }
++
+     // Encoder runs at fps = packetCount × timeBase / totalDuration with
+     // gop = ceil(SEGMENT_DURATION × fps). To start segment K's content at
+     // exactly cfr slot K × gop, seek to the midpoint between slots K×gop−1 and
+     // K×gop. accurate_seek's "discard < target" then keeps the source frame
+     // that quantizes to slot K×gop and discards the one quantizing to K×gop−1.
+     const fps = (asset.packets.packetCount * asset.videoStream.timeBase) / asset.packets.totalDuration;
+-    const gop = Math.ceil(HLS_SEGMENT_DURATION * fps);
+-    const seekSeconds = startSegment > 0 ? (startSegment * gop - 0.5) / fps : 0;
++    const gop = plan?.segments
++      ? Math.ceil(plan.duration * fps) + Math.ceil(fps)
++      : Math.ceil(HLS_SEGMENT_DURATION * fps);
++    const seekSeconds = plan?.segments
++      ? videoSeek(plan.segments, startSegment, false)
++      : startSegment > 0
++        ? (startSegment * gop - 0.5) / fps
++        : 0;
+ 
+     let config;
+     try {
+@@ -220,8 +320,8 @@ export class TranscodingService extends BaseService {
+         {
+           ...ffmpeg,
+           targetVideoCodec: variant.codec,
+-          targetResolution: String(variant.resolution),
+-          maxBitrate: `${Math.round(variant.bitrate / 1000)}k`,
++          targetResolution: String(Math.min(variant.resolution, asset.videoStream.width, asset.videoStream.height)),
++          maxBitrate: `${Math.round((plan?.bitrates[variantIndex] ?? variant.bitrate) / 1000)}k`,
+           gopSize: gop,
+           crf: HLS_CRF[variant.codec],
+         },
+@@ -248,18 +348,49 @@ export class TranscodingService extends BaseService {
+         target: TranscodeTarget.All,
+         timeBase: asset.videoStream.timeBase,
+         totalDuration: asset.packets.totalDuration,
++        ...(plan
++          ? {
++              playback: {
++                starts: plan.segments?.map((s) => s.start),
++                start: plan.segments?.[startSegment]?.start ?? (startSegment * gop) / fps,
++                duration: plan.duration,
++              },
++            }
++          : {}),
+       },
+       asset.videoStream,
+-      asset.audioStream ?? undefined,
++      plan ? undefined : (audio ?? undefined),
+     );
+     this.logger.log(
+-      `Starting HLS transcode for asset ${session.assetId} variant ${variantIndex} with command: ffmpeg ${args.join(' ')}`,
++      `Starting HLS ${plan ? 'paced video' : 'transcode'} variant ${variantIndex} for session ${session.id}`,
+     );
+     const process = this.processRepository.spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+     this.attachProcessHandlers(process, session, variantIndex);
+     return process;
+   }
+ 
++  private async getSessionAudio(session: Session, audio: AudioStreamInfo | null | undefined, originalPath: string) {
++    if (
++      !audio ||
++      audio.codecName !== 'aac' ||
++      audio.profile !== AacProfile.Lc ||
++      !(audio.bitrate > 0 && audio.bitrate <= 256_000)
++    ) {
++      return audio;
++    }
++
++    // The stored audio metadata predates channel/sample-rate fields. Probe only
++    // copy candidates, once per session, without changing the database schema.
++    session.audioProbe ??= Promise.resolve()
++      .then(() => (this.sessions.get(session.id) === session ? this.mediaRepository.probe(originalPath) : undefined))
++      .then((info) => info?.audioStreams.find(({ index }) => index === audio.index) ?? null)
++      .catch((error: unknown) => {
++        this.logger.warn(`Could not verify HLS audio compatibility for asset ${session.assetId}: ${error}`);
++        return null;
++      });
++    return (await session.audioProbe) ?? audio;
++  }
++
+   private failSession(session: Session, error: string) {
+     this.websocketRepository.serverSend('HlsSessionResult', { sessionId: session.id, error });
+     return this.onSessionEnd({ sessionId: session.id });
+@@ -307,7 +438,7 @@ export class TranscodingService extends BaseService {
+       if (session.process !== process) {
+         return;
+       }
+-      stderr += chunk.toString();
++      stderr = (stderr + chunk.toString()).slice(-64 * 1024);
+     });
+ 
+     process.on('exit', (code) => {
+@@ -376,6 +507,14 @@ export class TranscodingService extends BaseService {
+ 
+   private removeInactiveSessions() {
+     const cutoff = Date.now() - HLS_INACTIVITY_TIMEOUT_MS;
++    for (const session of this.sessions.values()) {
++      for (const [index, rendition] of session.renditions ?? []) {
++        if (rendition.lastActivityTime.getTime() < cutoff) {
++          session.renditions!.delete(index);
++          this.stopTranscode(rendition);
++        }
++      }
++    }
+     const inactiveSessions = this.sessions.values().filter((s) => s.lastActivityTime.getTime() < cutoff);
+     return Promise.all(
+       inactiveSessions.map(async (session) => {
+diff --git a/server/src/types.ts b/server/src/types.ts
+index d6310dc4040cd300d8d4541a5cc4a23c5d5aa029..c188bb6ad5d69244244d6ee82b427cf3042d0515 100644
+--- a/server/src/types.ts
++++ b/server/src/types.ts
+@@ -109,6 +109,8 @@ export interface AudioStreamInfo {
+   codecName: string | null;
+   profile: AacProfile | null;
+   bitrate: number;
++  channels?: number;
++  sampleRate?: number;
+ }
+ 
+ /** Packet-derived video data needed for accurate HLS playlists. */
+@@ -161,6 +163,8 @@ export interface VideoTuning {
+ }
+ 
+ export interface HlsCommandOptions {
++  /** Web-only Memories strategy: independent audio, optional source video grid. */
++  playback?: { starts?: number[]; start: number; duration: number };
+   initFilename: string;
+   inputPath: string;
+   packetCount: number;
+diff --git a/server/src/utils/hls-playback.ts b/server/src/utils/hls-playback.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..6d3b1d375cc433d56ae6308074c0d7cc45bd1e0c
+--- /dev/null
++++ b/server/src/utils/hls-playback.ts
+@@ -0,0 +1,230 @@
++import type { AudioStreamInfo, VideoStreamInfo } from 'src/types.js';
++
++// Adapted from memories-rkmpp's SourceSegments/RKMPPKeyframeGrid. One immutable
++// presentation grid is shared by copied and encoded video. Audio has its own clock.
++export type PlaybackSegment = { start: number; duration: number; keyframeAt?: number };
++export type PlaybackPlan = {
++  segments: PlaybackSegment[] | null;
++  audio: boolean;
++  duration: number;
++  original?: { codec: string; bitrate: number };
++  bitrates: Record<number, number>;
++};
++export const PLAYBACK_EPSILON = 0.000001;
++export const AUDIO_SEGMENT_DURATION = (94 * 1024) / 48_000;
++// The pinned Immich FFmpeg lacks readrate_catchup. Preserve its supported input
++// pacing/burst rather than passing a flag that prevents every worker starting.
++export const playbackPacing = ['-readrate', '1', '-readrate_initial_burst', '18'];
++
++export function originalVideoCodec(video: VideoStreamInfo): string | undefined {
++  if (video.rotation !== 0 || video.dvProfile !== null || [16, 18].includes(video.colorTransfer) || !video.level)
++    return;
++  if (
++    video.codecName === 'h264' &&
++    [66, 77, 100].includes(video.profile ?? -1) &&
++    ['yuv420p', 'yuvj420p'].includes(video.pixelFormat) &&
++    video.level >= 10 &&
++    video.level <= 62
++  ) {
++    return `avc1.${video.profile!.toString(16).padStart(2, '0')}00${video.level.toString(16).padStart(2, '0')}`;
++  }
++  if (
++    video.codecName === 'hevc' &&
++    [30, 60, 63, 90, 93, 120, 123, 150, 153, 156, 180, 183, 186].includes(video.level)
++  ) {
++    if (video.profile === 1 && video.pixelFormat === 'yuv420p') return `hvc1.1.6.L${video.level}.B0`;
++    if (video.profile === 2 && video.pixelFormat === 'yuv420p10le') return `hvc1.2.4.L${video.level}.B0`;
++  }
++}
++
++export const copyCapability = (codec: string) =>
++  codec.startsWith('avc1') ? 'avc' : codec.startsWith('hvc1.2') ? 'hevc10' : 'hevc';
++
++export class PlaybackTimeline {
++  private frames: { pts: number; start: number }[] = [];
++  private end = 0;
++  private invalid = false;
++
++  // Packet order, rather than sorted PTS, exposes leading pictures in open GOPs.
++  packet(pts: number, duration: number, flags: string) {
++    if (!Number.isFinite(pts) || !Number.isFinite(duration) || duration <= 0 || flags.includes('D')) return;
++    this.end = Math.max(this.end, pts + duration);
++    if (flags.includes('K')) {
++      if (this.frames.length >= 4096 || (this.frames.length && pts <= this.frames.at(-1)!.pts)) this.invalid = true;
++      if (!this.invalid) this.frames.push({ pts, start: pts });
++    } else if (this.frames.length) {
++      this.frames.at(-1)!.start = Math.min(this.frames.at(-1)!.start, pts);
++    }
++  }
++
++  finish(): PlaybackSegment[] | null {
++    if (this.invalid || this.frames.length < 2 || this.end <= 0 || Math.abs(this.frames[0].start) > 0.0001) return null;
++    const segments = this.frames.map((frame, i) => {
++      const start = i === 0 ? 0 : frame.start;
++      const end = this.frames[i + 1]?.start ?? this.end;
++      return { start, duration: end - start, ...(frame.pts !== start ? { keyframeAt: frame.pts } : {}) };
++    });
++    let bytes = 0;
++    for (let i = 0; i < segments.length; i++) {
++      const s = segments[i];
++      bytes += s.start.toFixed(9).length + 1;
++      if (
++        s.start < 0 ||
++        s.duration <= 0 ||
++        s.duration > 6.0001 ||
++        (i > 0 && this.frames[i].pts <= this.frames[i - 1].pts) ||
++        bytes > 60 * 1024
++      )
++        return null;
++    }
++    return segments.length - 2 > this.end * 4 ? null : segments;
++  }
++}
++
++export function segmentAt(segments: PlaybackSegment[], position: number) {
++  return Math.max(
++    0,
++    segments.findLastIndex((segment) => segment.start <= position + PLAYBACK_EPSILON),
++  );
++}
++
++export function videoSeek(segments: PlaybackSegment[], index: number, copy: boolean) {
++  const segment = segments[index];
++  if (index === 0) return 0;
++  if (copy) return (segment.keyframeAt ?? segment.start) + 10 * PLAYBACK_EPSILON;
++  const previous = segments[index - 1];
++  return (
++    (segment.keyframeAt === undefined ? segment.start : (previous.keyframeAt ?? previous.start)) + 10 * PLAYBACK_EPSILON
++  );
++}
++
++export function audioSegments(duration: number): PlaybackSegment[] {
++  const end = (Math.ceil((duration * 48_000) / 1024) * 1024) / 48_000;
++  return Array.from({ length: Math.ceil(end / AUDIO_SEGMENT_DURATION) }, (_, i) => ({
++    start: i * AUDIO_SEGMENT_DURATION,
++    duration: Math.min(AUDIO_SEGMENT_DURATION, end - i * AUDIO_SEGMENT_DURATION),
++  }));
++}
++
++export function playbackPlaylist(segments: PlaybackSegment[], independent: boolean) {
++  return [
++    '#EXTM3U',
++    '#EXT-X-VERSION:7',
++    ...(independent ? ['#EXT-X-INDEPENDENT-SEGMENTS'] : []),
++    `#EXT-X-TARGETDURATION:${Math.ceil(Math.max(...segments.map((s) => s.duration)))}`,
++    '#EXT-X-MEDIA-SEQUENCE:0',
++    '#EXT-X-PLAYLIST-TYPE:VOD',
++    '#EXT-X-MAP:URI="init.mp4"',
++    ...segments.flatMap((s, i) => [`#EXTINF:${s.duration.toFixed(9)},`, `seg_${i}.m4s`]),
++    '#EXT-X-ENDLIST',
++    '',
++  ].join('\n');
++}
++
++export function copyVideoArgs(
++  input: string,
++  video: VideoStreamInfo,
++  segments: PlaybackSegment[],
++  index: number,
++  directory: string,
++  join: (...paths: string[]) => string,
++) {
++  const seek = videoSeek(segments, index, true);
++  return [
++    '-hide_banner',
++    '-loglevel',
++    'warning',
++    '-nostdin',
++    ...(seek ? ['-ss', seek.toFixed(9), '-noaccurate_seek'] : []),
++    ...playbackPacing,
++    '-i',
++    input,
++    '-copyts',
++    '-map',
++    `0:${video.index}`,
++    '-c:v',
++    'copy',
++    '-an',
++    ...(video.codecName === 'hevc' ? ['-tag:v', 'hvc1'] : []),
++    '-avoid_negative_ts',
++    'disabled',
++    '-f',
++    'hls',
++    '-hls_time',
++    '0.00001',
++    '-hls_list_size',
++    '0',
++    '-hls_segment_type',
++    'fmp4',
++    '-hls_fmp4_init_filename',
++    'init.mp4',
++    '-hls_segment_options',
++    'movflags=+frag_discont+negative_cts_offsets+skip_sidx:use_editlist=0',
++    '-hls_flags',
++    'temp_file',
++    '-hls_segment_filename',
++    join(directory, 'seg_%d.m4s'),
++    '-start_number',
++    String(index),
++    join(directory, 'playlist.m3u8'),
++  ];
++}
++
++export function sharedAudioArgs(
++  input: string,
++  audio: AudioStreamInfo,
++  duration: number,
++  index: number,
++  directory: string,
++  join: (...paths: string[]) => string,
++) {
++  const start = index * AUDIO_SEGMENT_DURATION;
++  const end = (Math.ceil((duration * 48_000) / 1024) * 1024) / 48_000;
++  return [
++    '-hide_banner',
++    '-loglevel',
++    'warning',
++    '-nostdin',
++    ...(start ? ['-ss', start.toFixed(9)] : []),
++    ...playbackPacing,
++    '-i',
++    input,
++    '-copyts',
++    '-vn',
++    '-map',
++    `0:${audio.index}`,
++    '-c:a',
++    'aac',
++    '-b:a',
++    '192k',
++    '-ac',
++    '2',
++    '-ar',
++    '48000',
++    '-af',
++    `aresample=async=1:first_pts=${Math.round(start * 48_000)},apad=whole_dur=${(end - start).toFixed(9)},atrim=duration=${(end - start).toFixed(9)},asetpts=N/SR/TB+${start.toFixed(9)}/TB`,
++    '-bsf:a',
++    `noise=amount=0:drop=lt(pts*tb\\,${start.toFixed(9)})`,
++    '-avoid_negative_ts',
++    'disabled',
++    '-f',
++    'hls',
++    '-hls_time',
++    String(AUDIO_SEGMENT_DURATION),
++    '-hls_list_size',
++    '0',
++    '-hls_segment_type',
++    'fmp4',
++    '-hls_fmp4_init_filename',
++    'init.mp4',
++    '-hls_segment_options',
++    'movflags=+frag_discont+negative_cts_offsets:use_editlist=0',
++    '-hls_flags',
++    'temp_file',
++    '-hls_segment_filename',
++    join(directory, 'seg_%d.m4s'),
++    '-start_number',
++    String(index),
++    join(directory, 'playlist.m3u8'),
++  ];
++}
+diff --git a/server/src/utils/media.ts b/server/src/utils/media.ts
+index 8b57d9d9dc161c4ed980ecd95594f5b1fd0640b3..28a09b9e1bdc47bcd30bed916c4c6f77836ed75f 100644
+--- a/server/src/utils/media.ts
++++ b/server/src/utils/media.ts
+@@ -1,13 +1,14 @@
+ import {
+   AUDIO_ENCODER,
+   AV1_LEVELS,
+-  CodecLevel,
++  type CodecLevel,
+   H264_LEVELS,
+   HEVC_LEVELS,
+   SUPPORTED_HWA_CODECS,
+ } from 'src/constants.js';
+ import { ConfigFFmpegDto } from 'src/dtos/config.dto.js';
+ import {
++  AacProfile,
+   CQMode,
+   ColorMatrix,
+   ColorPrimaries,
+@@ -37,10 +38,8 @@ export const isVideoVertical = (videoStream: VideoStreamInfo): boolean =>
+ 
+ export const getOutputSize = (videoStream: VideoStreamInfo, targetRes: number) => {
+   const factor = Math.max(videoStream.height, videoStream.width) / Math.min(videoStream.height, videoStream.width);
+-  let larger = Math.round(targetRes * factor);
+-  if (larger % 2 !== 0) {
+-    larger -= 1;
+-  }
++  // Match FFmpeg's -2 scaling: round to the nearest even dimension.
++  const larger = Math.round((targetRes * factor) / 2) * 2;
+   return isVideoVertical(videoStream) ? { width: targetRes, height: larger } : { width: larger, height: targetRes };
+ };
+ 
+@@ -172,16 +171,31 @@ export class BaseConfig implements VideoCodecSWConfig {
+   }
+ 
+   getHlsCommand(options: HlsCommandOptions, video: VideoStreamInfo, audio?: AudioStreamInfo) {
++    // Keep compatible source packets and their clock across rendition restarts.
++    // Unknown profiles/layouts and high-rate audio retain normal AAC encoding.
++    // Apply this only to HLS; explicit offline conversion keeps its usual policy.
++    const target =
++      options.target === TranscodeTarget.All &&
++      audio?.codecName === 'aac' &&
++      audio.profile === AacProfile.Lc &&
++      (audio.channels === 1 || audio.channels === 2) &&
++      [32_000, 44_100, 48_000].includes(audio.sampleRate ?? 0) &&
++      audio.bitrate > 0 &&
++      audio.bitrate <= 256_000
++        ? TranscodeTarget.Video
++        : options.target;
+     const args: string[] = this.getBaseInputOptions(video);
+     if (options.seekSeconds) {
+       args.push('-ss', String(options.seekSeconds));
++      if (options.playback?.starts) args.push('-noaccurate_seek');
+     }
++    if (options.playback) args.push('-readrate', '1', '-readrate_initial_burst', '18');
+     args.push(
+       '-nostdin',
+       '-nostats',
+       '-i',
+       options.inputPath,
+-      ...this.getBaseOutputOptions(options.target, video, audio),
++      ...this.getBaseOutputOptions(target, video, audio),
+       ...this.getPresetOptions(),
+       ...this.getBitrateOptions(),
+       ...this.getEncoderOptions(),
+@@ -210,8 +224,41 @@ export class BaseConfig implements VideoCodecSWConfig {
+       String(options.startSegment),
+     );
+ 
++    if (options.playback) {
++      args.push('-an');
++      if (options.playback.starts) {
++        const rate = args.indexOf('-r');
++        args.splice(rate, 2, '-fps_mode', 'passthrough');
++        args[args.indexOf('-hls_time') + 1] = '0.00001';
++        args.push(
++          '-bf',
++          '0',
++          '-flags:v',
++          '+low_delay',
++          '-force_key_frames',
++          options.playback.starts
++            .filter((start) => start >= options.playback!.start - 0.000001)
++            .map((start) => Math.max(0, start - 0.000001).toFixed(9))
++            .join(','),
++        );
++      }
++      args[args.indexOf('-hls_segment_options') + 1] = 'movflags=+frag_discont+negative_cts_offsets:use_editlist=0';
++    }
++
++    if (target !== options.target && options.startSegment > 0) {
++      // Input accurate_seek only trims decoded streams. Copied AAC would retain
++      // keyframe preroll, replaying old audio after a cold quality change. Drop
++      // only packets before the exact shared GOP boundary; keep payloads/PTS.
++      const fps = (options.packetCount * options.timeBase) / options.totalDuration;
++      const boundary = (options.startSegment * Math.ceil(options.segmentDuration * fps)) / fps;
++      args.push('-bsf:a', `noise=amount=0:drop=lt(pts*tb\\,${boundary})`);
++    }
++
+     if ([TranscodeTarget.All, TranscodeTarget.Video].includes(options.target)) {
+       const filters = this.getFilterOptions(video);
++      if (options.playback?.starts && options.playback.start > 0) {
++        filters.unshift(`trim=start=${Math.max(0, options.playback.start - 0.000001).toFixed(9)}`);
++      }
+       if (filters.length > 0) {
+         args.push('-vf', filters.join(','));
+       }
+@@ -1083,6 +1130,41 @@ export class VaapiHwDecodeConfig extends VaapiSwDecodeConfig {
+ }
+ 
+ export class RkmppSwDecodeConfig extends BaseHWConfig {
++  getHlsCommand(options: HlsCommandOptions, video: VideoStreamInfo, audio?: AudioStreamInfo) {
++    const args = super.getHlsCommand(options, video, audio);
++    if (![TranscodeTarget.All, TranscodeTarget.Video].includes(options.target)) {
++      return args;
++    }
++
++    const { width, height } = this.shouldScale(video) ? getOutputSize(video, this.getTargetResolution(video)) : video;
++    const fps = (options.packetCount * options.timeBase) / options.totalDuration;
++    const codec = getCodecString(this.config.targetVideoCodec, width, height, fps);
++    const level =
++      this.config.targetVideoCodec === VideoCodec.H264
++        ? Number.parseInt(codec.slice(-2), 16)
++        : Number(codec.split('.')[3].slice(1));
++    // Match the master playlist instead of declaring level 5.1 for every size.
++    args[args.indexOf('-level') + 1] = String(level);
++    if (options.playback && this.getMaxBitrateValue() > 0) {
++      // Match Memories' network-budgeted hardware VBR path. Offline conversion
++      // and the legacy muxed HLS path keep their existing AVBR/CQP policy.
++      const bitrate = this.getMaxBitrateValue();
++      const unit = this.getBitrateUnit();
++      args[args.indexOf('-rc_mode') + 1] = 'VBR';
++      args.splice(
++        args.length - 1,
++        0,
++        '-maxrate',
++        `${bitrate}${unit}`,
++        '-bufsize',
++        `${bitrate * 2}${unit}`,
++        '-qp_init',
++        String(this.config.crf),
++      );
++    }
++    return args;
++  }
++
+   eligibleForTwoPass(): boolean {
+     return false;
+   }
+@@ -1135,10 +1217,12 @@ export class RkmppHwDecodeConfig extends RkmppSwDecodeConfig {
+   getFilterOptions(videoStream: VideoStreamInfo) {
+     if (this.shouldToneMap(videoStream)) {
+       const { primaries, transfer, matrix } = this.getColors();
++      // Preserve smaller sources while converting the surface for tone mapping.
++      const scaling = this.shouldScale(videoStream) ? `${this.getScaling(videoStream)}:` : '';
+       if (this.interfaces.mali) {
+         return [
+           // use RKMPP for scaling, OpenCL for tone mapping
+-          `scale_rkrga=${this.getScaling(videoStream)}:format=p010:afbc=1:async_depth=4`,
++          `scale_rkrga=${scaling}format=p010:afbc=1:async_depth=4`,
+           'hwmap=derive_device=opencl:mode=read',
+           `tonemap_opencl=format=nv12:r=pc:p=${primaries}:t=${transfer}:m=${matrix}:tonemap=${this.config.tonemap}:desat=0:tonemap_mode=lum:peak=100`,
+           'hwmap=derive_device=rkmpp:mode=write:reverse=1',
+@@ -1147,7 +1231,7 @@ export class RkmppHwDecodeConfig extends RkmppSwDecodeConfig {
+       }
+       return [
+         // use RKMPP for scaling, CPU for tone mapping (only works on RK3588, which supports 10-bit output)
+-        `scale_rkrga=${this.getScaling(videoStream)}:format=p010:afbc=1:async_depth=4`,
++        `scale_rkrga=${scaling}format=p010:afbc=1:async_depth=4`,
+         'hwdownload',
+         'format=p010',
+         `tonemapx=tonemap=${this.config.tonemap}:desat=0:p=${primaries}:t=${transfer}:m=${matrix}:r=pc:peak=100:format=yuv420p`,
+@@ -1157,6 +1241,7 @@ export class RkmppHwDecodeConfig extends RkmppSwDecodeConfig {
+     if (this.shouldScale(videoStream)) {
+       return [`scale_rkrga=${this.getScaling(videoStream)}:format=nv12:afbc=1:async_depth=4`];
+     }
+-    return [];
++    // Normalize 10-bit SDR surfaces even when the output size is unchanged.
++    return ['scale_rkrga=format=nv12:afbc=1:async_depth=4'];
+   }
+ }
+diff --git a/server/test/repositories/media.repository.mock.ts b/server/test/repositories/media.repository.mock.ts
+index e63d8c054a6d297f16cc43cbf65c8026695199a7..8d3c90aefe049c58a5c45a2d82d1e6799d6a2f40 100644
+--- a/server/test/repositories/media.repository.mock.ts
++++ b/server/test/repositories/media.repository.mock.ts
+@@ -11,6 +11,7 @@ export const newMediaRepositoryMock = (): Mocked<RepositoryInterface<MediaReposi
+     decodeImage: vitest.fn().mockResolvedValue({ data: Buffer.from(''), info: {} }),
+     extract: vitest.fn().mockResolvedValue(null),
+     probe: vitest.fn(),
++    probePlaybackTimeline: vitest.fn().mockResolvedValue(null),
+     probePackets: vitest.fn().mockResolvedValue({
+       totalDuration: 0,
+       packetCount: 0,
+diff --git a/web/src/lib/components/asset-viewer/VideoNativeViewer.svelte b/web/src/lib/components/asset-viewer/VideoNativeViewer.svelte
+index b8ade67aa32497646c47c60fee1e92e62618584b..ba1a6943646801484186ab88b9f1181fe4490ae6 100644
+--- a/web/src/lib/components/asset-viewer/VideoNativeViewer.svelte
++++ b/web/src/lib/components/asset-viewer/VideoNativeViewer.svelte
+@@ -1,15 +1,29 @@
+ <script lang="ts">
+-  import VideoRemoteViewer from '#lib/components/asset-viewer/VideoRemoteViewer.svelte';
+   import FaceEditor from '#lib/components/asset-viewer/face-editor/FaceEditor.svelte';
++  import VideoRemoteViewer from '#lib/components/asset-viewer/VideoRemoteViewer.svelte';
+   import { assetViewerFadeDuration } from '#lib/constants.ts';
+   import { assetViewerManager } from '#lib/managers/asset-viewer-manager.svelte.ts';
+-  import { authManager } from '#lib/managers/auth-manager.svelte.ts';
+   import { castManager } from '#lib/managers/cast-manager.svelte.ts';
++  import { authManager } from '#lib/managers/auth-manager.svelte.ts';
+   import { mediaCapabilitiesManager } from '#lib/managers/media-capabilities-manager.svelte.ts';
+   import { createPreloadedQuery } from '#lib/queries/client.ts';
+   import { getPublicConfigQuery } from '#lib/queries/config-public.query.ts';
+   import { autoPlayVideo, lang, loopVideo as loopVideoPreference } from '#lib/stores/preferences.store.ts';
+   import { getAssetHlsSessionUrl, getAssetHlsUrl, getAssetMediaUrl, getAssetPlaybackUrl } from '#lib/utils.ts';
++  import { monitorDirectPlayback } from '#lib/utils/direct-playback.ts';
++  import {
++    adaptiveHlsConfig,
++    attachAdaptivePlayback,
++    isOriginalLevel,
++    prepareAdaptivePlayback,
++  } from '#lib/utils/adaptive-playback.ts';
++  import {
++    isHevcCodec,
++    isHevcDecodeFailure,
++    isMediaDecodeFailure,
++    playbackPosition,
++    type PlaybackPosition,
++  } from '#lib/utils/video-codec.ts';
+   import { AssetMediaSize, type AssetResponseDto } from '@immich/sdk';
+   import { Icon, LoadingSpinner, shortcuts } from '@immich/ui';
+   import {
+@@ -27,7 +41,7 @@
+   } from '@mdi/js';
+   import 'hls-video-element';
+   import type HlsVideoElement from 'hls-video-element';
+-  import Hls, { AbrController, Events, type FragLoadedData, type FragLoadingData, type HlsConfig } from 'hls.js';
++  import Hls, { type HlsConfig } from 'hls.js';
+   import 'media-chrome/media-control-bar';
+   import 'media-chrome/media-controller';
+   import 'media-chrome/media-fullscreen-button';
+@@ -41,7 +55,7 @@
+   import 'media-chrome/menu/media-settings-menu';
+   import 'media-chrome/menu/media-settings-menu-button';
+   import 'media-chrome/menu/media-settings-menu-item';
+-  import { onDestroy, onMount } from 'svelte';
++  import { onDestroy, onMount, untrack } from 'svelte';
+   import { useSwipe, type SwipeCustomEvent } from 'svelte-gestures';
+   import { t } from 'svelte-i18n';
+   import { fade } from 'svelte/transition';
+@@ -81,9 +95,23 @@
+   let videoPlayer: HTMLVideoElement | undefined = $state();
+   let isLoading = $state(true);
+   let hasLoadedMetadata = $state(false);
++  let avcFallbackAssetId: string | undefined = $state();
++  let directFallbackAssetId: string | undefined = $state();
++  let pausedReloadAssetId: string | undefined = $state();
++  // Auto keeps copied Original and encoded renditions inside one HLS player.
++  // Explicit Play original remains a direct-file override.
++  let copyFallbackAssetId: string | undefined = $state();
++  let adaptiveDecision: { assetId: string; url: string; bandwidth: number } | undefined = $state();
++  let playbackStatus = $state('');
++  let originalRenditionIds: string[] = $state([]);
++  let useHls = $derived(
++    publicConfig.ffmpeg.realtime.enabled && (!playOriginalVideo || directFallbackAssetId === assetId),
++  );
+   let assetFileUrl = $derived.by(() => {
+-    if (publicConfig.ffmpeg.realtime.enabled) {
+-      return getAssetHlsUrl(assetId);
++    if (useHls) {
++      // A receiver negotiates its own codecs; local MSE/probe results do not apply.
++      if (castManager.isCasting) return getAssetHlsUrl(assetId);
++      return adaptiveDecision?.assetId === assetId ? adaptiveDecision.url : '';
+     }
+ 
+     if (playOriginalVideo) {
+@@ -97,56 +125,19 @@
+   let hasFocused = $state(false);
+   let activeSession: { assetId: string; id: string } | undefined;
+   let rebuildCount = 0;
++  let playbackAssetId: string | undefined;
++  let pendingResume: (PlaybackPosition & { assetId: string }) | undefined;
++  let stopAdaptivePlayback: (() => void) | undefined;
+ 
+   const MAX_REBUILDS = 1;
+   const SESSION_ID_REGEX = /\/video\/stream\/([0-9a-f-]{36})\//;
+ 
+-  // hls.js can abandon fetching an in-flight fragment if it thinks it'll take too long, in which case
+-  // it emergency switches to a different variant. This extends the delay even further due to
+-  // cold starting another transcode, so let the fragment finish and have steady ABR decide the next level.
+-  //
+-  // It can also emergency switch between fragments: while a switch's first segment is still loading,
+-  // it can run out of buffer and drop to a lower level for just one segment before continuing at the switched quality.
+-  // This can cause multiple redundant transcoding restarts when it occurs.
+-  // Hold the committed level until its first fragment lands, then resume normal ABR.
+-  class NoAbandonAbrController extends AbrController {
+-    private switchTarget = -1;
+-
+-    protected override onFragLoading(_event: Events.FRAG_LOADING, data: FragLoadingData) {
+-      if (data.frag.sn === 'initSegment') {
+-        this.switchTarget = data.frag.level;
+-      }
+-    }
+-
+-    protected override onFragLoaded(event: Events.FRAG_LOADED, data: FragLoadedData) {
+-      if (data.frag.sn !== 'initSegment') {
+-        this.switchTarget = -1;
+-      }
+-      super.onFragLoaded(event, data);
+-    }
+-
+-    override get nextAutoLevel(): number {
+-      const level = super.nextAutoLevel;
+-      const target = this.hls.levels[this.switchTarget];
+-      // Hold the committed level, but only while hls.js still considers it healthy.
+-      if (target && level < this.switchTarget && target.loadError === 0 && target.fragmentError === 0) {
+-        return this.switchTarget;
+-      }
+-      return level;
+-    }
+-
+-    override set nextAutoLevel(level: number) {
+-      super.nextAutoLevel = level;
+-    }
+-  }
+-
++  let hlsPositionHint: { api: Hls; position: number } | undefined;
+   const hlsConfig: Partial<HlsConfig> = {
+-    abrController: NoAbandonAbrController,
++    ...adaptiveHlsConfig,
+     highBufferWatchdogPeriod: 10,
+     detectStallWithCurrentTimeMs: 10_000,
+     maxBufferHole: 0.5,
+-    maxBufferLength: 30,
+-    maxMaxBufferLength: 60,
+     fragLoadPolicy: {
+       default: {
+         maxTimeToFirstByteMs: 30_000,
+@@ -164,10 +155,33 @@
+         }
+       }
+       xhr.open('GET', authenticatedUrl.href);
++      const api = isHlsElement(videoPlayer) ? videoPlayer.api : undefined;
++      const frag = [api?.inFlightFragments?.main?.frag, api?.inFlightFragments?.audio?.frag].find(
++        (fragment) => fragment?.initSegment?.url === url,
++      );
++      // During init loading hls.js exposes the associated media fragment. Its
++      // sequence number is exact; a server guess can be far ahead after a seek
++      // or an immediate quality switch with a full playback buffer.
++      if (typeof frag?.sn === 'number' && frag.initSegment?.url === url) {
++        xhr.setRequestHeader('x-immich-hls-msn', String(frag.sn));
++      }
++      const hint = hlsPositionHint;
++      if (
++        hint &&
++        hint.api === api &&
++        authenticatedUrl.pathname.endsWith('/playlist.m3u8') &&
++        authenticatedUrl.pathname.match(SESSION_ID_REGEX)?.[1] === activeSession?.id
++      ) {
++        xhr.setRequestHeader('x-immich-hls-pos', String(hint.position));
++        hlsPositionHint = undefined;
++      }
+     },
+   };
+ 
+   const releaseSession = () => {
++    stopAdaptivePlayback?.();
++    stopAdaptivePlayback = undefined;
++    hlsPositionHint = undefined;
+     const session = activeSession;
+     if (!session) {
+       return;
+@@ -181,45 +195,171 @@
+     return el?.tagName === 'HLS-VIDEO';
+   };
+ 
+-  const wireHlsListeners = (el: HlsVideoElement, assetId: string, resumeTime?: number) => {
++  const rememberPlayback = (el: HTMLVideoElement, id: string) => {
++    pendingResume = pendingResume?.assetId === id ? pendingResume : { assetId: id, ...playbackPosition(el) };
++    if (pendingResume.paused) {
++      pausedReloadAssetId = id;
++      // hls-video-element checks autoplay in its own manifest callback. Set the
++      // public property before changing src/load; keep the hold after metadata.
++      el.autoplay = false;
++    }
++    return pendingResume.currentTime;
++  };
++
++  const handlePlay = (el: HTMLVideoElement) => {
++    if (el !== videoPlayer) {
++      return;
++    }
++    if (pendingResume?.assetId === assetId) {
++      pendingResume.paused = false;
++    }
++    if (pausedReloadAssetId === assetId) {
++      pausedReloadAssetId = undefined;
++      el.autoplay = $autoPlayVideo;
++    }
++  };
++
++  const retryWithAvc = (el: HlsVideoElement, id: string) => {
++    if (videoPlayer !== el || assetId !== id || avcFallbackAssetId === id) {
++      return false;
++    }
++    rememberPlayback(el, id);
++    isLoading = true;
++    // Changing the source releases the old session and creates an AVC-only one.
++    // The server filters the master too, which also covers native HLS players.
++    avcFallbackAssetId = id;
++    adaptiveDecision = undefined;
++    return true;
++  };
++
++  const currentVideoCodec = (el: HlsVideoElement, level?: number) => {
+     const api = el.api;
+     if (!api) {
++      return undefined;
++    }
++    const index = level ?? (api.currentLevel >= 0 ? api.currentLevel : api.loadLevel);
++    return (
++      api.levels[index]?.videoCodec ??
++      (api.levels.length === 0 || api.levels.some((item) => isHevcCodec(item.videoCodec)) ? undefined : 'avc1')
++    );
++  };
++
++  const handleMediaError = (event: Event) => {
++    const el = event.currentTarget as HTMLVideoElement;
++    if (!isHlsElement(el)) {
++      if (isMediaDecodeFailure(el.error?.code)) retryWithHls(el, assetId);
+       return;
+     }
++    if (isMediaDecodeFailure(el.error?.code) && (!el.api || isHevcCodec(currentVideoCodec(el)))) {
++      retryWithAvc(el, assetId);
++    }
++  };
+ 
+-    // This is a hack to make the rendition menu use `api.currentLevel` instead of `api.nextLevel`.
+-    // `api.nextLevel` makes the player request the next segment followed by the current segment.
+-    // That backward request causes the server to restart transcoding for no reason.
+-    Object.defineProperty(api, 'nextLevel', {
+-      configurable: true,
+-      get: () => api.currentLevel,
+-      set: (level: number) => {
+-        api.currentLevel = level;
+-      },
+-    });
++  const retryWithHls = (el: HTMLVideoElement, id: string) => {
++    if (
++      videoPlayer !== el ||
++      assetId !== id ||
++      !publicConfig.ffmpeg.realtime.enabled ||
++      !playOriginalVideo ||
++      directFallbackAssetId === id
++    )
++      return;
++    rememberPlayback(el, id);
++    isLoading = true;
++    directFallbackAssetId = id;
++  };
++
++  const handleLoadedMetadata = (el: HTMLVideoElement) => {
++    hasLoadedMetadata = true;
++    const resume = pendingResume;
++    if (!resume || resume.assetId !== assetId || el !== videoPlayer) {
++      return;
++    }
++    pendingResume = undefined;
++    el.currentTime = resume.currentTime;
++    if (resume.paused) {
++      el.pause();
++    } else {
++      void el.play().catch(() => {});
++    }
++  };
++
++  const wireHlsListeners = (el: HlsVideoElement, assetId: string, resumeTime?: number) => {
++    const api = el.api;
++    if (!api) {
++      return;
++    }
++    if (resumeTime !== undefined) hlsPositionHint = { api, position: resumeTime };
+ 
+     // eslint-disable-next-line @typescript-eslint/no-misused-promises
+     api.on(Hls.Events.MANIFEST_PARSED, async () => {
++      if (el !== videoPlayer || el.api !== api || playbackAssetId !== assetId) {
++        return;
++      }
+       // Defer hls.js's first fragment load until we filter out suboptimal variants
+       api.stopLoad();
+       const id = api.levels[0]?.url[0]?.match(SESSION_ID_REGEX)?.[1];
+       if (id) {
+         activeSession = { assetId, id };
+       }
+-
++      // hls-video-element assigns menu IDs before the capability filter removes
++      // levels. Retain those IDs rather than guessing from the filtered ladder.
++      originalRenditionIds = api.levels.flatMap((level, index) => (isOriginalLevel(level) ? [String(index)] : []));
++
++      if (avcFallbackAssetId === assetId) {
++        for (let i = api.levels.length - 1; i >= 0; i--) {
++          if (!api.levels[i].videoCodec?.startsWith('avc1')) {
++            api.removeLevel(i);
++          }
++        }
++      }
+       const keep = await mediaCapabilitiesManager.efficientLevels(api.levels);
++      // Capability queries can finish after the source or viewer has changed.
++      if (el !== videoPlayer || el.api !== api || playbackAssetId !== assetId) {
++        return;
++      }
++      if (keep.size === 0) {
++        if (!retryWithAvc(el, assetId)) {
++          console.error('No supported HLS video renditions');
++          isLoading = false;
++        }
++        return;
++      }
+       for (let i = api.levels.length - 1; i >= 0; i--) {
+         if (!keep.has(i)) {
+           api.removeLevel(i);
+         }
+       }
+ 
++      stopAdaptivePlayback?.();
++      stopAdaptivePlayback = attachAdaptivePlayback(
++        api,
++        el,
++        assetFileUrl,
++        adaptiveDecision?.assetId === assetId ? adaptiveDecision.bandwidth : 0,
++        (text) => {
++          if (el === videoPlayer && el.api === api) playbackStatus = text;
++        },
++      );
+       api.startLoad(resumeTime);
+     });
+ 
+     api.on(Hls.Events.FRAG_LOADED, () => (rebuildCount = 0));
+ 
+     api.on(Hls.Events.ERROR, (_, data) => {
++      if (el !== videoPlayer || el.api !== api || playbackAssetId !== assetId) {
++        return;
++      }
++      const failedLevel = data.frag?.level ?? (api.currentLevel >= 0 ? api.currentLevel : api.loadLevel);
++      if (data.fatal && isOriginalLevel(api.levels[failedLevel]) && copyFallbackAssetId !== assetId) {
++        rememberPlayback(el, assetId);
++        copyFallbackAssetId = assetId;
++        adaptiveDecision = undefined;
++        return;
++      }
++      if (isHevcDecodeFailure(data, currentVideoCodec(el, data.frag?.level)) && retryWithAvc(el, assetId)) {
++        return;
++      }
+       // 404 on a fragment can mean the server-side session has expired. Refetch
+       // master for a new session, but give up if it still 404s.
+       if (
+@@ -228,12 +368,14 @@
+         data.response?.code !== 404 ||
+         rebuildCount++ >= MAX_REBUILDS
+       ) {
+-        console.error('HLS error', JSON.stringify(data));
++        // Fragments reference their loader/context and can be circular. Throwing
++        // while reporting a recoverable abort makes hls.js stop with a fatal error.
++        console.error('HLS error', { type: data.type, details: data.details, fatal: data.fatal }, data.error);
+         return;
+       }
+       console.warn('Error loading segment, starting new session');
+       activeSession = undefined;
+-      resumeTime = el.currentTime;
++      resumeTime = rememberPlayback(el, assetId);
+       el.load();
+       // wireHlsListeners must run after el.api is repopulated.
+       queueMicrotask(() => wireHlsListeners(el, assetId, resumeTime));
+@@ -244,10 +386,38 @@
+     showVideo = true;
+   });
+ 
++  let displayedMode: { assetId: string; original: boolean } | undefined;
++  $effect.pre(() => {
++    const previous = displayedMode;
++    displayedMode = { assetId, original: playOriginalVideo };
++    if (previous?.assetId === assetId && previous.original !== playOriginalVideo && videoPlayer) {
++      untrack(() => rememberPlayback(videoPlayer!, assetId));
++      // A fresh explicit Original selection may retry after an earlier fallback.
++      if (playOriginalVideo) directFallbackAssetId = undefined;
++    }
++    if (previous && previous.assetId !== assetId) {
++      directFallbackAssetId = undefined;
++      copyFallbackAssetId = undefined;
++    }
++  });
++
+   $effect(() => {
+     // reactive on `assetFileUrl` changes
+     hasLoadedMetadata = false;
++    playbackStatus = '';
++    if (videoPlayer && !assetFileUrl) {
++      // Avoid continuing the previous asset while an Auto decision is pending.
++      videoPlayer.pause();
++      videoPlayer.src = '';
++      releaseSession();
++    }
+     if (videoPlayer && assetFileUrl) {
++      if (playbackAssetId !== assetId) {
++        playbackAssetId = assetId;
++        pendingResume = undefined;
++        pausedReloadAssetId = undefined;
++        videoPlayer.autoplay = untrack(() => $autoPlayVideo);
++      }
+       hasFocused = false;
+       rebuildCount = 0;
+       releaseSession();
+@@ -255,14 +425,50 @@
+         videoPlayer.config = hlsConfig;
+         videoPlayer.src = assetFileUrl;
+         const el = videoPlayer;
+-        queueMicrotask(() => wireHlsListeners(el, assetId));
++        const resumeTime = pendingResume?.assetId === assetId ? pendingResume.currentTime : undefined;
++        queueMicrotask(() => wireHlsListeners(el, assetId, resumeTime));
+       } else {
+-        videoPlayer.load();
++        videoPlayer.src = assetFileUrl;
++        const el = videoPlayer;
++        const id = assetId;
++        const stopMonitor =
++          publicConfig.ffmpeg.realtime.enabled && playOriginalVideo
++            ? monitorDirectPlayback(el, () => retryWithHls(el, id))
++            : undefined;
++        return () => {
++          stopMonitor?.();
++          releaseSession();
++        };
+       }
+     }
+     return releaseSession;
+   });
+ 
++  // Probe in parallel with indexed source metadata, before loading any rendition.
++  // Cancellation prevents late results from reviving an old asset or copy mode.
++  $effect(() => {
++    const id = assetId;
++    const avc = avcFallbackAssetId === id;
++    const copy = copyFallbackAssetId !== id;
++    if (
++      !publicConfig.ffmpeg.realtime.enabled ||
++      castManager.isCasting ||
++      (playOriginalVideo && directFallbackAssetId !== id) ||
++      typeof document === 'undefined'
++    )
++      return;
++    const controller = new AbortController();
++    void prepareAdaptivePlayback({
++      masterUrl: getAssetHlsUrl(id, avc ? 'h264' : undefined),
++      authParams: authManager.params,
++      signal: controller.signal,
++      allowOriginal: copy,
++    }).then((decision) => {
++      if (!controller.signal.aborted && assetId === id) adaptiveDecision = { assetId: id, ...decision };
++    });
++    return () => controller.abort();
++  });
++
+   const onPagehide = (event: PageTransitionEvent) => {
+     if (!event.persisted) {
+       releaseSession();
+@@ -331,6 +537,92 @@
+   // The time is only refreshed on HLS fragment decode by default,
+   // so manually emit events on seek to update it immediately.
+   const onSeeking = (event: Event) => event.currentTarget?.dispatchEvent(new Event('timeupdate'));
++
++  const handleControlKeydown = (event: KeyboardEvent) => {
++    if (event.key !== ' ') return;
++    // Space activates the focused control. Do not also let the body shortcut
++    // toggle video playback; controls inside shadow roots appear in this path.
++    if (
++      event
++        .composedPath()
++        .some(
++          (target) =>
++            target instanceof HTMLElement &&
++            target !== event.currentTarget &&
++            (target.tagName.startsWith('MEDIA-') ||
++              target.matches('button, input, select, textarea, [role="button"], [role="slider"], [role^="menuitem"]')),
++        )
++    ) {
++      event.stopPropagation();
++    }
++  };
++
++  const controlShortcuts = (controller: HTMLElement, media: HTMLVideoElement | undefined) => {
++    let generation = 0;
++    let disposed = false;
++    const updateMedia = (next: HTMLVideoElement | undefined) => {
++      const version = ++generation;
++      // media-chrome can process an added replacement before the removed
++      // old media and then clear its store. Rebind after that mutation batch,
++      // preserving this controller (and its fullscreen element and controls).
++      queueMicrotask(() => {
++        if (
++          disposed ||
++          version !== generation ||
++          !next ||
++          !controller.isConnected ||
++          controller.querySelector(':scope > [slot=media]') !== next
++        )
++          return;
++        (controller as HTMLElement & { mediaSetCallback: (el: HTMLVideoElement) => void }).mediaSetCallback(next);
++      });
++    };
++    controller.addEventListener('keydown', handleControlKeydown);
++    updateMedia(media);
++    return {
++      update: updateMedia,
++      destroy: () => {
++        disposed = true;
++        controller.removeEventListener('keydown', handleControlKeydown);
++      },
++    };
++  };
++
++  type Rendition = { id: string; width: number; height: number; bitrate?: number };
++  const originalRenditionLabels = (element: HTMLElement, ids: string[]) => {
++    const menu = element as HTMLElement & {
++      mediaRenditionList: Rendition[];
++      formatRendition: (rendition: Rendition, options?: { showBitrate?: boolean }) => string;
++    };
++    const format = menu.formatRendition;
++    const originalFormat = Object.getOwnPropertyDescriptor(menu, 'formatRendition');
++    let currentIds = ids;
++    menu.formatRendition = (rendition) => {
++      const label = currentIds.includes(rendition.id)
++        ? `Original (${Math.min(rendition.width, rendition.height)}p)`
++        : format.call(menu, rendition, { showBitrate: false });
++      const bitrate = rendition.bitrate;
++      if (!bitrate || !Number.isFinite(bitrate) || bitrate <= 0) return label;
++      const bandwidth =
++        bitrate < 1_000_000
++          ? `${Math.round(bitrate / 1000)} kbps`
++          : `${(bitrate / 1_000_000).toFixed(1).replace(/\.0$/, '')} Mbps`;
++      return `${label} · ${bandwidth}`;
++    };
++    const update = (values: string[]) => {
++      currentIds = values;
++      // Re-render labels after the HLS manifest identifies Original's menu ID.
++      menu.mediaRenditionList = [...menu.mediaRenditionList];
++    };
++    update(ids);
++    return {
++      update,
++      destroy: () => {
++        if (originalFormat) Object.defineProperty(menu, 'formatRendition', originalFormat);
++        else Reflect.deleteProperty(menu, 'formatRendition');
++      },
++    };
++  };
+ </script>
+ 
+ <svelte:body
+@@ -379,19 +671,22 @@
+         class="dark h-full max-w-full"
+         style:aspect-ratio={aspectRatio}
+         defaultduration={asset.duration! / 1000}
++        use:controlShortcuts={videoPlayer}
+       >
+-        {#if publicConfig.ffmpeg.realtime.enabled}
++        {#if useHls}
+           <hls-video
+             bind:this={videoPlayer}
+             slot="media"
+             loop={$loopVideoPreference && loopVideo}
+-            autoplay={$autoPlayVideo}
++            autoplay={$autoPlayVideo && pausedReloadAssetId !== assetId}
+             disablePictureInPicture
+             playsinline
+             {...useSwipe(onSwipe)}
+             class="h-full object-contain"
+             oncanplay={(e: Event) => handleCanPlay(e.currentTarget as HTMLVideoElement)}
+-            onloadedmetadata={() => (hasLoadedMetadata = true)}
++            onloadedmetadata={(e: Event) => handleLoadedMetadata(e.currentTarget as HTMLVideoElement)}
++            onplay={(e: Event) => handlePlay(e.currentTarget as HTMLVideoElement)}
++            onerror={handleMediaError}
+             onended={onVideoEnded}
+             onseeking={onSeeking}
+             onplaying={(e: Event) => {
+@@ -409,15 +704,16 @@
+           <video
+             bind:this={videoPlayer}
+             slot="media"
+-            src={assetFileUrl}
+             loop={$loopVideoPreference && loopVideo}
+-            autoplay={$autoPlayVideo}
++            autoplay={$autoPlayVideo && pausedReloadAssetId !== assetId}
+             disablePictureInPicture
+             playsinline
+             {...useSwipe(onSwipe)}
+             class="h-full object-contain"
+             oncanplay={(e) => handleCanPlay(e.currentTarget)}
+-            onloadedmetadata={() => (hasLoadedMetadata = true)}
++            onloadedmetadata={(e) => handleLoadedMetadata(e.currentTarget)}
++            onplay={(e) => handlePlay(e.currentTarget)}
++            onerror={handleMediaError}
+             onended={onVideoEnded}
+             onseeking={onSeeking}
+             onplaying={(e) => {
+@@ -434,7 +730,11 @@
+         {/if}
+ 
+         {#if extendedControls}
+-          <media-settings-menu hidden anchor="auto" class="min-w-3xs rounded-xl border border-light-300 shadow-sm">
++          <media-settings-menu
++            hidden
++            anchor="auto"
++            class="min-w-3xs rounded-xl border border-light-300 shadow-sm"
++          >
+             <Icon slot="checked-indicator" icon={mdiCheck} class="m-2" />
+             <media-settings-menu-item class="mx-1 rounded-lg p-1 ps-2">
+               {$t('media_chrome.playback_rate')}
+@@ -444,11 +744,11 @@
+                 <span slot="title">{$t('media_chrome.playback_rate')}</span>
+               </media-playback-rate-menu>
+             </media-settings-menu-item>
+-            {#if publicConfig.ffmpeg.realtime.enabled}
++            {#if useHls}
+               <media-settings-menu-item class="mx-1 rounded-lg p-1 ps-2">
+                 {$t('video_quality')}
+                 <Icon slot="suffix" icon={mdiChevronRight} class="m-2" />
+-                <media-rendition-menu slot="submenu" hidden>
++                <media-rendition-menu slot="submenu" hidden use:originalRenditionLabels={originalRenditionIds}>
+                   <Icon slot="back-icon" icon={mdiChevronLeft} class="m-2" />
+                   <span slot="title">{$t('video_quality')}</span>
+                 </media-rendition-menu>
+@@ -467,6 +767,9 @@
+               <Icon slot="pause" icon={mdiPause} />
+             </media-play-button>
+             <media-time-display showduration class="rounded-lg p-2 outline-none"></media-time-display>
++            {#if useHls && playbackStatus}
++              <span class="self-center text-xs text-white/80" aria-live="polite">{playbackStatus}</span>
++            {/if}
+ 
+             <span class="grow"></span>
+ 
+@@ -548,6 +851,11 @@
+     font-variant-numeric: tabular-nums;
+   }
+ 
++  media-settings-menu {
++    /* The controls form a later stacking context and otherwise cover this menu. */
++    z-index: 1;
++  }
++
+   immich-time-range,
+   media-volume-range {
+     --media-control-hover-background: none;
+diff --git a/web/src/lib/managers/media-capabilities-manager.svelte.ts b/web/src/lib/managers/media-capabilities-manager.svelte.ts
+index ccabc6680d2a8938172e2c2e671a8823a128b525..380a8fbf8713438aec6fcc3b210965b8d5f9157b 100644
+--- a/web/src/lib/managers/media-capabilities-manager.svelte.ts
++++ b/web/src/lib/managers/media-capabilities-manager.svelte.ts
+@@ -1,75 +1,93 @@
+-export type Level = { videoCodec?: string; width: number; height: number; bitrate: number; frameRate: number };
++export type Level = {
++  videoCodec?: string;
++  width: number;
++  height: number;
++  bitrate: number;
++  frameRate: number;
++  url?: string[];
++};
+ 
+ export const DEFAULT_DECODING_INFO: MediaCapabilitiesDecodingInfo = {
+-  powerEfficient: true,
+-  smooth: true,
+-  supported: true,
++  powerEfficient: false,
++  smooth: false,
++  supported: false,
+   keySystemAccess: null,
+ };
+ 
+-class MediaCapabilitiesManager {
++export class MediaCapabilitiesManager {
++  private static readonly MAX_CACHE_ENTRIES = 128;
+   private cache = new Map<string, Promise<MediaCapabilitiesDecodingInfo>>();
+ 
+-  init() {
+-    for (const level of [
+-      { videoCodec: 'av01.0.04M.08', width: 854, height: 480, bitrate: 1_000_000, frameRate: 60 },
+-      { videoCodec: 'hvc1.1.6.L90.B0', width: 854, height: 480, bitrate: 1_200_000, frameRate: 60 },
+-      { videoCodec: 'av01.0.08M.08', width: 1280, height: 720, bitrate: 2_000_000, frameRate: 60 },
+-      { videoCodec: 'hvc1.1.6.L93.B0', width: 1280, height: 720, bitrate: 2_500_000, frameRate: 60 },
+-      { videoCodec: 'av01.0.09M.08', width: 1920, height: 1080, bitrate: 4_000_000, frameRate: 60 },
+-      { videoCodec: 'hvc1.1.6.L120.B0', width: 1920, height: 1080, bitrate: 4_500_000, frameRate: 60 },
+-      { videoCodec: 'av01.0.12M.08', width: 2560, height: 1440, bitrate: 7_000_000, frameRate: 60 },
+-      { videoCodec: 'hvc1.2.4.L150.B0', width: 2560, height: 1440, bitrate: 8_000_000, frameRate: 60 },
+-    ]) {
+-      this.cache.set(this.cacheKey(level), this.queryDecodingInfo(level));
+-    }
+-
+-    for (const level of [
+-      { videoCodec: 'avc1.64001e', width: 854, height: 480, bitrate: 2_500_000, frameRate: 60 },
+-      { videoCodec: 'avc1.64001f', width: 1280, height: 720, bitrate: 5_000_000, frameRate: 60 },
+-      { videoCodec: 'avc1.640028', width: 1920, height: 1080, bitrate: 8_000_000, frameRate: 60 },
+-      { videoCodec: 'avc1.640032', width: 2560, height: 1440, bitrate: 16_000_000, frameRate: 60 },
+-    ]) {
+-      this.cache.set(this.cacheKey(level), Promise.resolve(DEFAULT_DECODING_INFO));
+-    }
+-  }
+-
+   async efficientLevels(levels: Level[]) {
+     const decodingInfo = await Promise.all(levels.map((level) => this.decodingInfo(level)));
+     // eslint-disable-next-line svelte/prefer-svelte-reactivity
+-    const lowestBitrateByHeight = new Map<number, number>();
++    const candidatesByHeight = new Map<number, number[]>();
++    const originals: number[] = [];
+     for (let i = 0; i < levels.length; i++) {
+-      if (!decodingInfo[i].powerEfficient) {
+-        continue;
++      if (decodingInfo[i].supported) {
++        if (levels[i].url?.some((url) => new URL(url, 'https://local.invalid').searchParams.get('original') === '1')) {
++          originals.push(i);
++          continue;
++        }
++        const candidates = candidatesByHeight.get(levels[i].height) ?? [];
++        candidates.push(i);
++        candidatesByHeight.set(levels[i].height, candidates);
+       }
++    }
+ 
+-      const { bitrate, height } = levels[i];
+-      const cur = lowestBitrateByHeight.get(height);
+-      if (cur === undefined || bitrate < levels[cur].bitrate) {
+-        lowestBitrateByHeight.set(height, i);
++    const selected: number[] = [];
++    for (const candidates of candidatesByHeight.values()) {
++      const efficient = candidates.filter((i) => decodingInfo[i].smooth && decodingInfo[i].powerEfficient);
++      const avc = candidates.filter((i) => levels[i].videoCodec?.startsWith('avc1'));
++      const smooth = candidates.filter((i) => decodingInfo[i].smooth);
++      // A missing/failed MediaCapabilities query must not remove MSE-supported AVC.
++      const preferred = efficient.length ? efficient : avc.length ? avc : smooth;
++      const best = preferred.reduce<number | undefined>(
++        (best, i) => (best === undefined || levels[i].bitrate < levels[best].bitrate ? i : best),
++        undefined,
++      );
++      if (best !== undefined) {
++        selected.push(best);
+       }
+     }
+-
+-    return new Set(lowestBitrateByHeight.values());
++    return new Set([...selected, ...originals]);
+   }
+ 
+-  decodingInfo(level: Level) {
+-    const key = this.cacheKey(level);
+-    const existing = this.cache.get(key);
+-    if (existing) {
+-      return existing;
++  decodingInfo(level: Level): Promise<MediaCapabilitiesDecodingInfo> {
++    const mediaSource =
++      (globalThis as typeof globalThis & { ManagedMediaSource?: typeof MediaSource }).ManagedMediaSource ??
++      globalThis.MediaSource;
++    const contentType = `video/mp4; codecs="${level.videoCodec}"`;
++    try {
++      if (!level.videoCodec || !mediaSource?.isTypeSupported(contentType)) {
++        return Promise.resolve(DEFAULT_DECODING_INFO);
++      }
++    } catch {
++      return Promise.resolve(DEFAULT_DECODING_INFO);
++    }
++
++    // Decoder limits depend on the full frame and frame rate, including portrait video.
++    const key = `${level.videoCodec}|${level.width}|${level.height}|${level.bitrate}|${level.frameRate}`;
++    let promise = this.cache.get(key);
++    if (promise) {
++      // Refresh recency without retaining every asset shape for the whole session.
++      this.cache.delete(key);
++    } else {
++      promise = this.queryDecodingInfo(level, contentType);
+     }
+-    const promise = this.queryDecodingInfo(level);
+     this.cache.set(key, promise);
++    if (this.cache.size > MediaCapabilitiesManager.MAX_CACHE_ENTRIES) {
++      this.cache.delete(this.cache.keys().next().value!);
++    }
+     return promise;
+   }
+ 
+-  private async queryDecodingInfo(level: Level) {
++  private async queryDecodingInfo(level: Level, contentType: string): Promise<MediaCapabilitiesDecodingInfo> {
+     try {
+       return await navigator.mediaCapabilities.decodingInfo({
+         type: 'media-source',
+         video: {
+-          contentType: `video/mp4; codecs="${level.videoCodec}"`,
++          contentType,
+           width: level.width,
+           height: level.height,
+           bitrate: level.bitrate,
+@@ -77,16 +95,11 @@ class MediaCapabilitiesManager {
+         },
+       });
+     } catch {
+-      return DEFAULT_DECODING_INFO;
++      // MSE support is confirmed above; efficiency and smoothness remain unknown.
++      return { ...DEFAULT_DECODING_INFO, supported: true };
+     }
+   }
+-
+-  private cacheKey({ videoCodec, width, height, frameRate }: Level) {
+-    const resolution = Math.min(width, height);
+-    const fpsBucket = Math.trunc(frameRate / 61) * 60;
+-    return `${videoCodec}|${resolution}|${fpsBucket}`;
+-  }
+ }
+ 
++// Query actual renditions lazily; fixed 60fps guesses can misclassify other sources.
+ export const mediaCapabilitiesManager = new MediaCapabilitiesManager();
+-mediaCapabilitiesManager.init();
+diff --git a/web/src/lib/utils.ts b/web/src/lib/utils.ts
+index febeaaf33d5e7be4f9c3765d03e25c391d289ff1..faa05d8fe47ce7e574bb1f7a376a14480732ba5b 100644
+--- a/web/src/lib/utils.ts
++++ b/web/src/lib/utils.ts
+@@ -243,8 +243,8 @@ export const getAssetPlaybackUrl = (options: AssetUrlOptions) => {
+   return createUrl(getAssetPlaybackPath(id), { ...authManager.params, c });
+ };
+ 
+-export const getAssetHlsUrl = (id: string) => {
+-  return createUrl(`/assets/${id}/video/stream/main.m3u8`, authManager.params);
++export const getAssetHlsUrl = (id: string, videoCodec?: 'h264' | 'hevc') => {
++  return createUrl(`/assets/${id}/video/stream/main.m3u8`, { ...authManager.params, videoCodec });
+ };
+ 
+ export const getAssetHlsSessionUrl = (id: string, sessionId: string) => {
+diff --git a/web/src/lib/utils/adaptive-playback.ts b/web/src/lib/utils/adaptive-playback.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1ef0c508e0ef857ba23aafca49009f28db945239
+--- /dev/null
++++ b/web/src/lib/utils/adaptive-playback.ts
+@@ -0,0 +1,374 @@
++import type Hls from 'hls.js';
++import type { FragBufferedData } from 'hls.js';
++
++// Port of Memories' bounded probes and native hls.js policy. A producer's wait
++// before the first byte is not evidence that the connection is slow.
++export const adaptiveHlsConfig = {
++  autoStartLoad: false,
++  startFragPrefetch: false,
++  testBandwidth: false,
++  maxBufferLength: 18,
++  maxMaxBufferLength: 18,
++  maxBufferSize: 96 * 1024 * 1024,
++  backBufferLength: 8,
++  capLevelOnFPSDrop: true,
++  fpsDroppedMonitoringThreshold: 0.2,
++  maxStarvationDelay: 6,
++  maxLoadingDelay: 6,
++};
++export const safeEstimate = (bps: number) =>
++  Number.isFinite(bps) && bps > 0 ? Math.max(150_000, Math.round(Math.min(bps, 120_000_000) * 0.75)) : 750_000;
++
++export function transferBandwidth(stats: { loaded: number; loading: { first: number; end: number } }) {
++  const { first, end } = stats.loading;
++  return first > 0 && end > first && stats.loaded >= 16_384
++    ? Math.min(120_000_000, (stats.loaded * 8000) / Math.max(20, end - first))
++    : 0;
++}
++
++export const isOriginalLevel = (level?: { url: string[] }) =>
++  level?.url.some((url) => new URL(url, 'https://local.invalid').searchParams.get('original') === '1') ?? false;
++
++export function playbackEndpoint(master: string, endpoint: string, authParams: Record<string, unknown> = {}) {
++  const url = new URL(master, globalThis.location?.href);
++  if (!url.pathname.endsWith('/main.m3u8')) throw new Error('Unexpected playback URL');
++  url.pathname = url.pathname.slice(0, -'main.m3u8'.length) + endpoint;
++  url.searchParams.delete('videoCodec');
++  for (const [key, value] of Object.entries(authParams))
++    if (typeof value === 'string' && value) url.searchParams.set(key, value);
++  return url;
++}
++
++export async function probeConnection(
++  master: string,
++  signal: AbortSignal,
++  recovery = false,
++  fetcher: typeof fetch = fetch,
++  now = () => performance.now(),
++): Promise<number> {
++  const controller = new AbortController();
++  const cancel = () => controller.abort();
++  if (signal.aborted) return 0;
++  signal.addEventListener('abort', cancel, { once: true });
++  const timer = setTimeout(cancel, 2200);
++  let estimate = 0;
++  try {
++    for (const size of recovery ? [131072, 393216] : [65536, 393216, 1572864]) {
++      const url = playbackEndpoint(master, 'network-probe');
++      url.searchParams.set('bytes', String(size));
++      const start = now();
++      const response = await fetcher(url.href, { signal: controller.signal, cache: 'no-store' });
++      if (!response.ok || response.headers.get('Content-Encoding')) break;
++      const bytes = await response.arrayBuffer();
++      // Aborted, partial and transformed replies never establish capacity.
++      if (bytes.byteLength !== size || controller.signal.aborted) break;
++      const elapsed = Math.max(25, now() - start);
++      estimate = (size * 8000) / elapsed;
++      // Memories continues after a cold first request so connection setup and
++      // TCP warmup do not set Auto's quality. The overall deadline bounds cost.
++    }
++  } catch {
++    /* retain only the last completed sample */
++  } finally {
++    clearTimeout(timer);
++    signal.removeEventListener('abort', cancel);
++  }
++  return signal.aborted ? 0 : estimate;
++}
++
++type OriginalInfo = {
++  rotation: number;
++  videoCodec: string;
++  videoProfile: number | null;
++  videoLevel: number | null;
++  pixelFormat: string;
++  colorTransfer: number;
++  dvProfile: number | null;
++};
++
++export function originalCapability(
++  info: OriginalInfo,
++  supported: (mime: string) => boolean,
++): 'avc' | 'hevc' | 'hevc10' | undefined {
++  if (info.rotation !== 0 || info.dvProfile !== null || [16, 18].includes(info.colorTransfer) || !info.videoLevel)
++    return;
++  let codec: string | undefined;
++  let capability: 'avc' | 'hevc' | 'hevc10' = 'avc';
++  if (
++    info.videoCodec === 'h264' &&
++    [66, 77, 100].includes(info.videoProfile ?? -1) &&
++    ['yuv420p', 'yuvj420p'].includes(info.pixelFormat) &&
++    info.videoLevel >= 10 &&
++    info.videoLevel <= 62
++  ) {
++    codec = `avc1.${info.videoProfile!.toString(16).padStart(2, '0')}00${info.videoLevel.toString(16).padStart(2, '0')}`;
++  } else if (
++    info.videoCodec === 'hevc' &&
++    [30, 60, 63, 90, 93, 120, 123, 150, 153, 156, 180, 183, 186].includes(info.videoLevel)
++  ) {
++    if (info.videoProfile === 1 && info.pixelFormat === 'yuv420p') {
++      codec = `hvc1.1.6.L${info.videoLevel}.B0`;
++      capability = 'hevc';
++    } else if (info.videoProfile === 2 && info.pixelFormat === 'yuv420p10le') {
++      codec = `hvc1.2.4.L${info.videoLevel}.B0`;
++      capability = 'hevc10';
++    }
++  }
++  try {
++    if (codec && supported(`video/mp4; codecs="${codec}"`)) return capability;
++  } catch {
++    /* unsupported */
++  }
++}
++
++export async function prepareAdaptivePlayback({
++  masterUrl,
++  authParams,
++  signal,
++  allowOriginal = true,
++  supported = (mime: string) => {
++    const source =
++      (globalThis as typeof globalThis & { ManagedMediaSource?: typeof MediaSource }).ManagedMediaSource ??
++      globalThis.MediaSource;
++    return source?.isTypeSupported(mime) ?? false;
++  },
++  fetcher = fetch,
++}: {
++  masterUrl: string;
++  authParams?: Record<string, unknown>;
++  signal: AbortSignal;
++  allowOriginal?: boolean;
++  supported?: (mime: string) => boolean;
++  fetcher?: typeof fetch;
++}) {
++  // getAssetHlsUrl uses the SDK's API base, normally the relative path /api.
++  const url = new URL(masterUrl, globalThis.location?.href);
++  for (const [key, value] of Object.entries(authParams ?? {}))
++    if (typeof value === 'string' && value) url.searchParams.set(key, value);
++  url.searchParams.set('strategy', 'memories');
++  const metadataController = new AbortController();
++  const cancel = () => metadataController.abort();
++  if (signal.aborted) return { url: url.href, bandwidth: 0 };
++  signal.addEventListener('abort', cancel, { once: true });
++  const timeout = setTimeout(cancel, 1200);
++  const metadata = (async () => {
++    if (!allowOriginal) return;
++    try {
++      const response = await fetcher(playbackEndpoint(url.href, 'original-info').href, {
++        signal: metadataController.signal,
++        cache: 'no-store',
++      });
++      if (response.ok && !metadataController.signal.aborted)
++        return originalCapability(await response.json(), supported);
++    } catch {
++      /* no Original; encoded HLS remains available */
++    }
++  })();
++  try {
++    const [copy, bandwidth] = await Promise.all([metadata, probeConnection(url.href, signal, false, fetcher)]);
++    if (copy && !signal.aborted) url.searchParams.set('copy', copy);
++    return { url: url.href, bandwidth };
++  } finally {
++    clearTimeout(timeout);
++    signal.removeEventListener('abort', cancel);
++  }
++}
++
++export function attachAdaptivePlayback(
++  hls: Hls,
++  video: HTMLVideoElement,
++  master: string,
++  initialBandwidth: number,
++  onStatus: (text: string) => void = () => {},
++) {
++  const controller = new AbortController();
++  const signal = controller.signal;
++  const events = hls.constructor as typeof Hls;
++  let lastProbe = Date.now();
++  let probing = false;
++  let samples: number[] = [];
++  let lastPosition = video.currentTime || 0;
++  const debug = new URL(globalThis.location?.href ?? master).searchParams.has('playbackDebug');
++  let automaticNotification = false;
++  // hls-video-element 1.5.11 mirrors an emergency downgrade into its rendition
++  // menu. That programmatic change must not turn Auto into a manual quality pin.
++  const originalTrigger = hls.trigger;
++  const originalNextLevel = Object.getOwnPropertyDescriptor(hls, 'nextLevel');
++  const smoothSwitch = Object.getOwnPropertyDescriptor(events.prototype, 'nextLevel')?.set;
++  hls.trigger = ((event: string, data: unknown) => {
++    const previous = automaticNotification;
++    if (event === events.Events.LEVEL_SWITCHED) automaticNotification = hls.autoLevelEnabled;
++    try {
++      return (originalTrigger as (event: string, data: unknown) => boolean).call(hls, event, data);
++    } finally {
++      if (automaticNotification) {
++        const renditions = (video as HTMLVideoElement & { videoRenditions?: { selectedIndex: number } })
++          .videoRenditions;
++        if (renditions && renditions.selectedIndex >= 0) renditions.selectedIndex = -1;
++      }
++      automaticNotification = previous;
++    }
++  }) as Hls['trigger'];
++  const bufferAhead = () => {
++    for (let i = 0; i < video.buffered.length; i++) {
++      if (video.buffered.start(i) <= video.currentTime + 0.1 && video.buffered.end(i) > video.currentTime)
++        return video.buffered.end(i) - video.currentTime;
++    }
++    return 0;
++  };
++  const refresh = async (force = false) => {
++    if (probing || signal.aborted || !hls.autoLevelEnabled || (!force && Date.now() - lastProbe < 20_000)) return;
++    lastProbe = Date.now();
++    probing = true;
++    try {
++      const bps = await probeConnection(master, signal, true);
++      if (bps > 0 && !signal.aborted && hls.autoLevelEnabled) {
++        const estimate = safeEstimate(bps);
++        hls.bandwidthEstimate = estimate;
++        const higher = hls.levels[hls.currentLevel + 1];
++        if (
++          !video.paused &&
++          !video.seeking &&
++          bufferAhead() >= 3 &&
++          hls.currentLevel >= 0 &&
++          hls.currentLevel < hls.maxAutoLevel &&
++          higher &&
++          estimate >= (higher.maxBitrate || higher.bitrate) * 1.35
++        ) {
++          const original = hls.levels.findIndex(isOriginalLevel);
++          if (
++            original >= 0 &&
++            original <= hls.maxAutoLevel &&
++            hls.levels[original].bitrate < estimate * hls.config.abrBandWidthUpFactor
++          ) {
++            // Native ABR stays within its current codec family. A measured,
++            // affordable Original can re-enter Auto for one fragment; native
++            // adaptation and decoder caps remain in force afterwards.
++            hls.nextAutoLevel = original;
++          }
++          // Memories expedites recovery through native Auto. Keep the playing
++          // fragment while hls.js reselects future data from the new estimate.
++          smoothSwitch?.call(hls, -1);
++        }
++      }
++    } finally {
++      probing = false;
++    }
++  };
++  // Native nextLevel keeps the playing fragment and schedules replacement of
++  // future data. loadLevel alone waits for the entire buffered tail to play.
++  Object.defineProperty(hls, 'nextLevel', {
++    configurable: true,
++    get: () => hls.manualLevel,
++    set: (level: number) => {
++      if (automaticNotification) return;
++      samples = [];
++      if (level === -1) {
++        hls.loadLevel = -1;
++        void refresh(true);
++      } else if (smoothSwitch) {
++        smoothSwitch.call(hls, level);
++      } else {
++        hls.loadLevel = level;
++      }
++    },
++  });
++  hls.loadLevel = -1;
++  const estimate = safeEstimate(initialBandwidth);
++  hls.bandwidthEstimate = estimate;
++  // Native startup can prefer the AVC codec tier over an affordable Main10
++  // Original. Select only the first rendition; manualLevel stays -1 so native
++  // Auto can still downshift if subsequent delivery or decoding requires it.
++  const original = hls.levels.findIndex(isOriginalLevel);
++  hls.startLevel =
++    initialBandwidth > 0 && original >= 0 && hls.levels[original].bitrate < estimate * hls.config.abrBandWidthUpFactor
++      ? original
++      : -1;
++  const buffered = (_: unknown, data: FragBufferedData) => {
++    if (data.frag.type !== 'main') return;
++    const bps = transferBandwidth(data.stats);
++    if (bps > 0) samples = [...samples.slice(-3), bps];
++    const producerWait = data.stats.loading.first - data.stats.loading.start;
++    if (hls.autoLevelEnabled && producerWait >= 900 && samples.length >= 2 && bufferAhead() >= 3) {
++      const estimate = safeEstimate(Math.min(...samples.slice(-2)));
++      if (hls.bandwidthEstimate < estimate * 0.65) hls.bandwidthEstimate = estimate;
++    }
++  };
++  const update = () => {
++    lastPosition = Math.max(lastPosition, video.currentTime || 0);
++    if (debug && video.dataset) {
++      const native = (video as HTMLVideoElement & { nativeEl?: HTMLVideoElement }).nativeEl ?? video;
++      const quality = native.getVideoPlaybackQuality?.();
++      Object.assign(video.dataset, {
++        playbackBandwidth: String(Math.round(hls.bandwidthEstimate)),
++        playbackLevel: String(hls.currentLevel),
++        playbackCap: String(hls.autoLevelCapping),
++        playbackDropped: String(quality?.droppedVideoFrames ?? ''),
++        playbackFrames: String(quality?.totalVideoFrames ?? ''),
++      });
++    }
++    const level = hls.levels[hls.currentLevel];
++    if (video.videoWidth && video.videoHeight)
++      onStatus(
++        `${isOriginalLevel(level) ? 'Original' : hls.autoLevelEnabled ? 'Auto' : 'Playing'} · ${video.videoWidth}×${video.videoHeight}`,
++      );
++    if (
++      !video.paused &&
++      !video.ended &&
++      !video.seeking &&
++      bufferAhead() >= 3 &&
++      hls.currentLevel >= 0 &&
++      hls.currentLevel < hls.levels.length - 1
++    )
++      void refresh();
++  };
++  const network = () => {
++    if (!video.paused && !video.ended) void refresh(true);
++  };
++  const foreground = () => {
++    if (!document.hidden) network();
++  };
++  const seeking = () => {
++    const position = video.currentTime;
++    const backward = position < lastPosition;
++    lastPosition = position;
++    if (!backward || !video.buffered.length) return;
++    for (let i = 0; i < video.buffered.length; i++) {
++      if (video.buffered.start(i) <= position && video.buffered.end(i) > position) return;
++    }
++    // Appending earlier AAC against retained future data can leave a splice
++    // hole, and retained Original GOPs can outlive a manual quality change.
++    // An unbuffered rewind/loop needs one fresh audio/video timeline.
++    hls.stopLoad();
++    hls.trigger(events.Events.BUFFER_FLUSHING, { startOffset: 0, endOffset: Infinity, type: null });
++    hls.startLoad(position);
++  };
++  const connection = (navigator as Navigator & { connection?: EventTarget }).connection;
++  hls.on(events.Events.FRAG_BUFFERED, buffered);
++  video.addEventListener('resize', update);
++  video.addEventListener('timeupdate', update);
++  video.addEventListener('seeking', seeking);
++  window.addEventListener('online', network);
++  document.addEventListener('visibilitychange', foreground);
++  connection?.addEventListener('change', network);
++  const timer = setInterval(update, 1000);
++  return () => {
++    if (signal.aborted) return;
++    controller.abort();
++    clearInterval(timer);
++    hls.trigger = originalTrigger;
++    if (originalNextLevel) Object.defineProperty(hls, 'nextLevel', originalNextLevel);
++    else Reflect.deleteProperty(hls, 'nextLevel');
++    hls.off(events.Events.FRAG_BUFFERED, buffered);
++    video.removeEventListener('resize', update);
++    video.removeEventListener('timeupdate', update);
++    video.removeEventListener('seeking', seeking);
++    if (debug && video.dataset) {
++      for (const key of ['playbackBandwidth', 'playbackLevel', 'playbackCap', 'playbackDropped', 'playbackFrames'])
++        delete video.dataset[key];
++    }
++    window.removeEventListener('online', network);
++    document.removeEventListener('visibilitychange', foreground);
++    connection?.removeEventListener('change', network);
++  };
++}
+diff --git a/web/src/lib/utils/direct-playback.ts b/web/src/lib/utils/direct-playback.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..965cc6f7e41fb9ab414d98a927fb4db7a963b756
+--- /dev/null
++++ b/web/src/lib/utils/direct-playback.ts
+@@ -0,0 +1,85 @@
++type DirectMedia = Pick<HTMLVideoElement,
++  'paused' | 'ended' | 'seeking' | 'currentTime' | 'duration' | 'readyState' | 'playbackRate' |
++  'buffered' | 'addEventListener' | 'removeEventListener'>;
++
++// A direct original has no adaptive ladder. Fall back before a persistently
++// draining buffer empties, or after a sustained stall. Pauses and seeks are not
++// evidence of a slow connection. One monitor belongs to one media element.
++export const monitorDirectPlayback = (video: DirectMedia, onFallback: () => void) => {
++  let timer: ReturnType<typeof setInterval> | undefined;
++  let last: { time: number; position: number; ahead: number } | undefined;
++  let stalledAt: number | undefined;
++  let drainingSamples = 0;
++  let disposed = false;
++
++  const reset = () => {
++    last = undefined;
++    stalledAt = undefined;
++    drainingSamples = 0;
++  };
++  const stop = () => {
++    if (timer !== undefined) clearInterval(timer);
++    timer = undefined;
++    reset();
++  };
++  const sample = () => {
++    if (video.paused || video.ended || video.seeking) {
++      reset();
++      return;
++    }
++    const time = performance.now();
++    const position = video.currentTime;
++    let ahead = 0;
++    for (let i = 0; i < video.buffered.length; i++) {
++      if (video.buffered.start(i) <= position + 0.05 && video.buffered.end(i) > position) {
++        ahead = video.buffered.end(i) - position;
++        break;
++      }
++    }
++    // An almost finished original does not need a new HLS session.
++    if (Number.isFinite(video.duration) && video.duration - position <= Math.max(1, ahead + 0.1)) {
++      reset();
++      return;
++    }
++    if (last) {
++      const elapsed = (time - last.time) / 1000;
++      const advanced = position - last.position;
++      if (elapsed > 0 && advanced >= 0 && advanced < 0.1 && video.readyState < 3) {
++        stalledAt ??= last.time;
++      } else {
++        stalledAt = undefined;
++      }
++      const draining = elapsed > 0 && advanced > 0.1 && ahead < 3 &&
++        ahead < last.ahead - elapsed * video.playbackRate * 0.25;
++      drainingSamples = draining ? drainingSamples + 1 : 0;
++      if ((stalledAt !== undefined && time - stalledAt >= 4000) || drainingSamples >= 2) {
++        cleanup();
++        onFallback();
++        return;
++      }
++    }
++    last = { time, position, ahead };
++  };
++  const start = () => {
++    if (disposed || timer !== undefined || video.paused || video.ended) return;
++    reset();
++    timer = setInterval(sample, 1000);
++  };
++  const cleanup = () => {
++    if (disposed) return;
++    disposed = true;
++    stop();
++    video.removeEventListener('play', start);
++    video.removeEventListener('playing', start);
++    video.removeEventListener('pause', stop);
++    video.removeEventListener('ended', stop);
++    video.removeEventListener('seeking', reset);
++  };
++  video.addEventListener('play', start);
++  video.addEventListener('playing', start);
++  video.addEventListener('pause', stop);
++  video.addEventListener('ended', stop);
++  video.addEventListener('seeking', reset);
++  start();
++  return cleanup;
++};
+diff --git a/web/src/lib/utils/video-codec.ts b/web/src/lib/utils/video-codec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..69b244bbfa4a673d907f662960c2eae9b4ffb8ac
+--- /dev/null
++++ b/web/src/lib/utils/video-codec.ts
+@@ -0,0 +1,23 @@
++const codecFailures = new Set([
++  'manifestIncompatibleCodecsError',
++  'bufferAddCodecError',
++  'bufferAppendError',
++  'bufferAppendingError',
++  'fragParsingError',
++]);
++
++export const isHevcCodec = (codec?: string) => /^(?:hvc1|hev1)(?:\.|$)/.test(codec ?? '');
++
++export const isHevcDecodeFailure = (
++  error: { fatal: boolean; type: string; details: string },
++  codec?: string,
++) => error.fatal && error.type !== 'networkError' && codecFailures.has(error.details) && (!codec || isHevcCodec(codec));
++
++export const isMediaDecodeFailure = (code?: number) => code === 3 || code === 4;
++
++export type PlaybackPosition = { currentTime: number; paused: boolean };
++
++export const playbackPosition = (video: PlaybackPosition): PlaybackPosition => ({
++  currentTime: Number.isFinite(video.currentTime) ? Math.max(0, video.currentTime) : 0,
++  paused: video.paused,
++});

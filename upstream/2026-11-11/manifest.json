@@ -1,0 +1,49 @@
+{
+  "date": "2026-11-11",
+  "source_repository": "meitelis/immich-rkmpp",
+  "source_commit": "3d82c85b3696f384dc39a8a8a13d9df2a563c558",
+  "upstream_repository": "immich-app/immich",
+  "upstream_commit": "3b2f4642882189260d11fb529bbf8b9021a075ff",
+  "ancestor_tag": "v3.4.0",
+  "files": {
+    "web/src/lib/utils.ts": "ported",
+    "web/src/lib/managers/media-capabilities-manager.svelte.ts": "resolved",
+    "web/src/lib/utils/direct-playback.ts": "added",
+    "web/src/lib/utils/adaptive-playback.ts": "added",
+    "web/src/lib/utils/video-codec.ts": "added",
+    "web/src/lib/components/asset-viewer/VideoNativeViewer.svelte": "merged",
+    "server/src/types.ts": "ported",
+    "server/test/repositories/media.repository.mock.ts": "ported",
+    "server/src/dtos/streaming.dto.ts": "merged",
+    "server/src/dtos/streaming.dto.spec.ts": "added",
+    "server/src/controllers/video-stream.controller.ts": "resolved",
+    "server/src/repositories/websocket.repository.ts": "ported",
+    "server/src/repositories/media.repository.ts": "ported",
+    "server/src/repositories/event.repository.ts": "ported",
+    "server/src/utils/hls-playback.ts": "added",
+    "server/src/utils/media.ts": "merged",
+    "server/src/services/hls.service.ts": "ported",
+    "server/src/services/hls.service.spec.ts": "ported",
+    "server/src/services/transcoding.service.ts": "ported"
+  },
+  "resolutions": {
+    "server/src/controllers/video-stream.controller.ts": "Retain upstream header validation removal and custom strategy argument.",
+    "web/src/lib/managers/media-capabilities-manager.svelte.ts": "Remove obsolete eager init call; custom manager queries actual levels lazily."
+  },
+  "preserved_upstream_changes": [
+    "QSV and VAAPI NV12 tone mapping fixes",
+    "Svelte keyboard shortcut attachments",
+    "upstream global header validation"
+  ],
+  "series": [
+    "0001-playback-source-review.diff"
+  ],
+  "checksums": {
+    "0001-playback-source-review.diff": "33f975d5f79cebf79f66a11c7f1bca376d60697685a18c66486bb2a339546cb9"
+  },
+  "native_diff_stat": " server/src/controllers/video-stream.controller.ts  |  74 +++-\n server/src/dtos/streaming.dto.spec.ts              |  17 +\n server/src/dtos/streaming.dto.ts                   |  10 +\n server/src/repositories/event.repository.ts        |   5 +-\n server/src/repositories/media.repository.ts        |  55 ++-\n server/src/repositories/websocket.repository.ts    |   2 +\n server/src/services/hls.service.spec.ts            |  48 ++-\n server/src/services/hls.service.ts                 | 241 ++++++++++-\n server/src/services/transcoding.service.ts         | 189 +++++++--\n server/src/types.ts                                |   4 +\n server/src/utils/hls-playback.ts                   | 230 +++++++++++\n server/src/utils/media.ts                          | 103 ++++-\n server/test/repositories/media.repository.mock.ts  |   1 +\n .../asset-viewer/VideoNativeViewer.svelte          | 454 +++++++++++++++++----\n .../managers/media-capabilities-manager.svelte.ts  | 121 +++---\n web/src/lib/utils.ts                               |   4 +-\n web/src/lib/utils/adaptive-playback.ts             | 374 +++++++++++++++++\n web/src/lib/utils/direct-playback.ts               |  85 ++++\n web/src/lib/utils/video-codec.ts                   |  23 ++\n 19 files changed, 1840 insertions(+), 200 deletions(-)\n",
+  "native_diff_check": "",
+  "verified_patch_replay": true,
+  "result_tree": "740ea9547c7febb5775a17c32fa6f1b83a9289a0",
+  "status": "technical review candidate; not approved for upstream submission"
+}

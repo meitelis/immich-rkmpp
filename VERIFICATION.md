@@ -1,3 +1,46 @@
+# Playback buffer and recovery follow-up — 11 November 2026
+
+Normal pointer clicks reproduced the inactive quality control: the later
+control-bar stacking context covered the settings menu. Raising that menu
+fixes both opening the resolution list and selecting a rendition by mouse.
+DOM/keyboard activation had bypassed the obstruction, so pointer testing is
+required for this regression. The corrected layout passed isolated and live
+mouse-click checks.
+
+Cold Auto transitions exposed another difference from Memories: one quality
+could cancel another's pending requests and encoder startup. Requested
+Memories renditions now own independent producers under the same authenticated
+session. Existing idle cleanup releases unused producers; session end and
+late-start ownership checks stop all remaining work. Legacy HLS retains its
+single-producer policy. Concurrency, idle sweeping and teardown regressions pass.
+
+Unbuffered backward seeks reset retained audio and video together, avoiding
+AAC splice holes and old Original fragments surviving a manual selection.
+Buffered seeks preserve their data and pause/manual state. A generated Main10
+open-GOP fixture reproduced the earlier gap on hls.js 1.7.3 and 1.7.4; upgrading
+alone did not fix it, so the upstream dependency remains pinned.
+
+Bounded probes continue after a cold first sample. Recovery can replace future
+low-quality data while retaining the playing fragment. A supported affordable
+Original can re-enter Auto for one fragment across codec families; decoder
+caps and subsequent native downshifts remain authoritative. Generated playback
+returned from 480p to Original with Auto enabled, no mid-clip errors or buffer
+gaps, and zero dropped frames. Cold loop startup can still need evicted data.
+
+Candidate `local/immich-server:rkmpp-3.4.0-r4-memories-fix4` built on the
+ROCK 5B+ and passed 120 source regressions, 98 upstream server tests, browser
+TypeScript/Svelte checks and three runtime FFmpeg fragment cases. Helper SHA-256:
+`689c9ab699dc1195418ea8065ae2fa9c11777ff2a2e7ec7c39c1830cb0a740f1`.
+Live checks on the actual 4K/60 Main10 clip passed: mouse-operated resolution
+selection, repeated playback, and 1080p -> Auto recovery through 1440p to
+3840x2160 Original with Auto still enabled. No buffer gaps, HLS errors or
+additional dropped frames occurred during the measured recovery. Navigating
+through two other portrait videos and back restarted the clip at 4K Original
+without errors. These checks do not establish every browser, media type,
+network condition, audible-continuity target or maximum concurrent viewer count.
+
+---
+
 # Immich 3.4.0 port — 10 November 2026
 
 Candidate: `local/immich-server:rkmpp-3.4.0-r4-memories`, built from the

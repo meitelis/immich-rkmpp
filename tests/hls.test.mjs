@@ -125,12 +125,21 @@ test('unavailable copy grids and mismatched browser capabilities retain encoded 
   }
 });
 
-test('shared audio requests do not overwrite the video sequence or invalidate its pending requests', async () => {
+test('Memories quality and audio requests do not invalidate each other or infer init positions from other requests', async () => {
   const h = await memories();
+  const rejected = [];
+  h.sut.pendingSegments.rejectByPrefix = (prefix) => rejected.push(prefix);
   await h.sut.getSegment(auth, 'asset', sessionId, 2, 'seg_3.m4s', undefined, 'memories');
+  await h.sut.getSegment(auth, 'asset', sessionId, 5, 'seg_1.m4s', undefined, 'memories');
   await h.sut.getSegment(auth, 'asset', sessionId, HLS_VARIANTS.length + 1, 'seg_1.m4s', undefined, 'memories');
   await h.sut.getSegment(auth, 'asset', sessionId, 2, 'init.mp4', undefined, 'memories');
-  assert.equal(h.events.at(-1).event.segmentIndex, 4, 'video init still follows video segment 3');
+  assert.equal(h.events.at(-1).event.segmentIndex, 0, 'an unhinted init starts safely at zero');
+  await h.sut.getSegment(auth, 'asset', sessionId, 5, 'init.mp4', 2, 'memories');
+  assert.equal(h.events.at(-1).event.segmentIndex, 2, 'the associated fragment owns hinted startup');
+  assert.deepEqual(rejected, [], 'a different quality cannot cancel in-flight Memories requests');
+  await h.sut.getSegment(auth, 'asset', sessionId, 2, 'seg_0.m4s');
+  await h.sut.getSegment(auth, 'asset', sessionId, 5, 'seg_0.m4s');
+  assert.equal(rejected.length, 1, 'legacy sessions retain their single-producer cancellation policy');
   await assert.rejects(h.sut.getSegment(auth, 'wrong-asset', sessionId, 2, 'seg_0.m4s'), NotFoundException);
   await assert.rejects(h.sut.getSegment(auth, 'asset', sessionId, HLS_VARIANTS.length, 'seg_999.m4s', undefined, 'memories'), NotFoundException);
 });

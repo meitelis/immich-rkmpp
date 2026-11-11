@@ -202,13 +202,13 @@ export class HlsService extends BaseService {
     const plan = strategy === 'memories' ? await this.getPlaybackPlan(sessionId) : undefined;
     if (plan) this.validatePlaybackVariant(plan, variantIndex);
     const isAudio = !!plan && variantIndex === HLS_VARIANTS.length + 1;
-    const apiSession = isAudio ? this.trackSession(sessionId) : this.trackSession(sessionId, variantIndex);
-    // Audio has independent sequence numbers; never infer its init from video.
-    const segmentIndex = isAudio
+    // Memories has independent producers per rendition. Concurrent requests for
+    // another quality must not invalidate this one's pending init or fragments.
+    const segmentIndex = plan
       ? filename.endsWith('.mp4')
         ? (initSegment ?? 0)
         : Number(HLS_SEGMENT_FILENAME_REGEX.exec(filename)![1])
-      : this.getSegmentIndex(apiSession, filename, initSegment);
+      : this.getSegmentIndex(this.trackSession(sessionId, variantIndex), filename, initSegment);
     if (plan) {
       const segments = isAudio ? audioSegments(plan.duration) : plan.segments;
       const count = segments?.length ?? Math.ceil(plan.duration / HLS_SEGMENT_DURATION);

@@ -115,6 +115,18 @@ test('failed, transformed, cancelled and incomplete probes cannot establish a fa
   }
 });
 
+test('a slow first request does not hide the connection capacity measured by later samples', async () => {
+  const requests = [], times = [0, 800, 800, 850, 850, 950];
+  const bandwidth = await probeConnection('https://cloud.test/api/assets/id/video/stream/main.m3u8',
+    new AbortController().signal, false, async (value) => {
+      const size = Number(new URL(value).searchParams.get('bytes'));
+      requests.push(size);
+      return { ok: true, headers: { get: () => null }, arrayBuffer: async () => new ArrayBuffer(size) };
+    }, () => times.shift());
+  assert.deepEqual(requests, [65_536, 393_216, 1_572_864]);
+  assert.equal(bandwidth, 125_829_120);
+});
+
 test('Auto keeps one authenticated HLS source and negotiates Original independently of source audio', async () => {
   const requests = [];
   const result = await prepareAdaptivePlayback({

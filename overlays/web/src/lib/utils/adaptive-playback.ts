@@ -64,7 +64,8 @@ export async function probeConnection(
       if (bytes.byteLength !== size || controller.signal.aborted) break;
       const elapsed = Math.max(25, now() - start);
       estimate = (size * 8000) / elapsed;
-      if (elapsed > 700) break;
+      // Memories continues after a cold first request so connection setup and
+      // TCP warmup do not set Auto's quality. The overall deadline bounds cost.
     }
   } catch {
     /* retain only the last completed sample */
@@ -186,11 +187,14 @@ export function attachAdaptivePlayback(
   let lastProbe = Date.now();
   let probing = false;
   let samples: number[] = [];
+  let lastPosition = video.currentTime || 0;
+  const debug = new URL(globalThis.location?.href ?? master).searchParams.has('playbackDebug');
   let automaticNotification = false;
   // hls-video-element 1.5.11 mirrors an emergency downgrade into its rendition
   // menu. That programmatic change must not turn Auto into a manual quality pin.
   const originalTrigger = hls.trigger;
   const originalNextLevel = Object.getOwnPropertyDescriptor(hls, 'nextLevel');
+  const smoothSwitch = Object.getOwnPropertyDescriptor(events.prototype, 'nextLevel')?.set;
   hls.trigger = ((event: string, data: unknown) => {
     const previous = automaticNotification;
     if (event === events.Events.LEVEL_SWITCHED) automaticNotification = hls.autoLevelEnabled;
@@ -218,7 +222,35 @@ export function attachAdaptivePlayback(
     probing = true;
     try {
       const bps = await probeConnection(master, signal, true);
-      if (bps > 0 && !signal.aborted && hls.autoLevelEnabled) hls.bandwidthEstimate = safeEstimate(bps);
+      if (bps > 0 && !signal.aborted && hls.autoLevelEnabled) {
+        const estimate = safeEstimate(bps);
+        hls.bandwidthEstimate = estimate;
+        const higher = hls.levels[hls.currentLevel + 1];
+        if (
+          !video.paused &&
+          !video.seeking &&
+          bufferAhead() >= 3 &&
+          hls.currentLevel >= 0 &&
+          hls.currentLevel < hls.maxAutoLevel &&
+          higher &&
+          estimate >= (higher.maxBitrate || higher.bitrate) * 1.35
+        ) {
+          const original = hls.levels.findIndex(isOriginalLevel);
+          if (
+            original >= 0 &&
+            original <= hls.maxAutoLevel &&
+            hls.levels[original].bitrate < estimate * hls.config.abrBandWidthUpFactor
+          ) {
+            // Native ABR stays within its current codec family. A measured,
+            // affordable Original can re-enter Auto for one fragment; native
+            // adaptation and decoder caps remain in force afterwards.
+            hls.nextAutoLevel = original;
+          }
+          // Memories expedites recovery through native Auto. Keep the playing
+          // fragment while hls.js reselects future data from the new estimate.
+          smoothSwitch?.call(hls, -1);
+        }
+      }
     } finally {
       probing = false;
     }
@@ -257,6 +289,18 @@ export function attachAdaptivePlayback(
     }
   };
   const update = () => {
+    lastPosition = Math.max(lastPosition, video.currentTime || 0);
+    if (debug && video.dataset) {
+      const native = (video as HTMLVideoElement & { nativeEl?: HTMLVideoElement }).nativeEl ?? video;
+      const quality = native.getVideoPlaybackQuality?.();
+      Object.assign(video.dataset, {
+        playbackBandwidth: String(Math.round(hls.bandwidthEstimate)),
+        playbackLevel: String(hls.currentLevel),
+        playbackCap: String(hls.autoLevelCapping),
+        playbackDropped: String(quality?.droppedVideoFrames ?? ''),
+        playbackFrames: String(quality?.totalVideoFrames ?? ''),
+      });
+    }
     const level = hls.levels[hls.currentLevel];
     if (video.videoWidth && video.videoHeight)
       onStatus(
@@ -278,10 +322,26 @@ export function attachAdaptivePlayback(
   const foreground = () => {
     if (!document.hidden) network();
   };
+  const seeking = () => {
+    const position = video.currentTime;
+    const backward = position < lastPosition;
+    lastPosition = position;
+    if (!backward || !video.buffered.length) return;
+    for (let i = 0; i < video.buffered.length; i++) {
+      if (video.buffered.start(i) <= position && video.buffered.end(i) > position) return;
+    }
+    // Appending earlier AAC against retained future data can leave a splice
+    // hole, and retained Original GOPs can outlive a manual quality change.
+    // An unbuffered rewind/loop needs one fresh audio/video timeline.
+    hls.stopLoad();
+    hls.trigger(events.Events.BUFFER_FLUSHING, { startOffset: 0, endOffset: Infinity, type: null });
+    hls.startLoad(position);
+  };
   const connection = (navigator as Navigator & { connection?: EventTarget }).connection;
   hls.on(events.Events.FRAG_BUFFERED, buffered);
   video.addEventListener('resize', update);
   video.addEventListener('timeupdate', update);
+  video.addEventListener('seeking', seeking);
   window.addEventListener('online', network);
   document.addEventListener('visibilitychange', foreground);
   connection?.addEventListener('change', network);
@@ -296,6 +356,11 @@ export function attachAdaptivePlayback(
     hls.off(events.Events.FRAG_BUFFERED, buffered);
     video.removeEventListener('resize', update);
     video.removeEventListener('timeupdate', update);
+    video.removeEventListener('seeking', seeking);
+    if (debug && video.dataset) {
+      for (const key of ['playbackBandwidth', 'playbackLevel', 'playbackCap', 'playbackDropped', 'playbackFrames'])
+        delete video.dataset[key];
+    }
     window.removeEventListener('online', network);
     document.removeEventListener('visibilitychange', foreground);
     connection?.removeEventListener('change', network);

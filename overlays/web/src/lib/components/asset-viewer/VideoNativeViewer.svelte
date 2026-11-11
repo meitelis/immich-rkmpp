@@ -851,6 +851,11 @@
     font-variant-numeric: tabular-nums;
   }
 
+  media-settings-menu {
+    /* The controls form a later stacking context and otherwise cover this menu. */
+    z-index: 1;
+  }
+
   immich-time-range,
   media-volume-range {
     --media-control-hover-background: none;

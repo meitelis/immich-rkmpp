@@ -156,12 +156,60 @@ test('Memories video quality switches retain the same independent audio worker',
   assert.deepEqual(audioProcess.signals, [], 'video selection must not kill or restart shared audio');
   assert.equal(h.processes.length, 3);
   const session = h.sut.sessions.get('session');
-  session.lastCompletedSegment = 100;
+  session.renditions.get(1).lastCompletedSegment = 100;
   await h.sut.onHeartbeat({ sessionId: 'session', variantIndex: 1, segmentIndex: 1 });
   assert.deepEqual(h.processes[2].signals, [], 'paced RKMPP must not receive SIGSTOP even with a full buffer');
   await h.sut.onSessionEnd({ sessionId: 'session' });
   assert.deepEqual(audioProcess.signals, ['SIGKILL']);
   assert.deepEqual(h.processes[2].signals, ['SIGKILL']);
+});
+
+test('overlapping cold Memories qualities own independent producers and duplicate requests share their start', async () => {
+  const h = await setup({ playback: playbackPlan });
+  const low = h.start(0), high = h.start(1, 1), duplicate = h.start(1, 1);
+  await flush();
+  assert.equal(h.metadataRequests.length, 2);
+  h.metadataRequests[1].resolve(playbackMetadata);
+  await high;
+  h.metadataRequests[0].resolve(playbackMetadata);
+  await Promise.all([low, duplicate]);
+  assert.equal(h.processes.length, 2, 'a later quality must not supersede a pending producer for another level');
+  assert.ok(h.processes.every((process) => process.signals.length === 0));
+  await h.sut.onSessionEnd({ sessionId: 'session' });
+  assert.ok(h.processes.every((process) => process.signals.join() === 'SIGKILL'));
+});
+
+test('inactive Memories producers release hardware without stopping the active quality or shared audio', async () => {
+  const h = await setup({ playback: playbackPlan });
+  const starts = [h.start(0), h.start(1), h.start(3)];
+  await flush();
+  for (const request of h.metadataRequests) request.resolve(playbackMetadata);
+  await Promise.all(starts);
+  const session = h.sut.sessions.get('session');
+  session.renditions.get(0).lastActivityTime = new Date(Date.now() - 31_000);
+  await h.sut.removeInactiveSessions();
+  assert.deepEqual(h.processes[0].signals, ['SIGKILL']);
+  assert.deepEqual(h.processes[1].signals, []);
+  assert.deepEqual(h.processes[2].signals, []);
+  assert.equal(session.renditions.has(0), false);
+  await h.sut.onSessionEnd({ sessionId: 'session' });
+});
+
+test('a swept cold Memories start cannot create an orphan or attach to its replacement', async () => {
+  const h = await setup({ playback: playbackPlan });
+  const old = h.start(0);
+  await flush();
+  h.sut.sessions.get('session').renditions.get(0).lastActivityTime = new Date(Date.now() - 31_000);
+  await h.sut.removeInactiveSessions();
+  const replacement = h.start(0);
+  await flush();
+  h.metadataRequests[0].resolve(playbackMetadata);
+  await old;
+  assert.equal(h.processes.length, 0);
+  h.metadataRequests[1].resolve(playbackMetadata);
+  await replacement;
+  assert.equal(h.processes.length, 1);
+  await h.sut.onSessionEnd({ sessionId: 'session' });
 });
 
 test('Original requests remux video without opening a hardware encoder or a duplicate audio encoder', async () => {

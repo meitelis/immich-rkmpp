@@ -37,7 +37,7 @@ async function startup(bandwidth, { legacy = false, afterStart, mixedCodecs = fa
     });
     hls.loadSource('https://cloud.test/main.m3u8');
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const extra = afterStart?.(hls);
+    const extra = await afterStart?.(hls, video);
     return { requests, bitrateTest: hls.streamController.bitrateTest, auto: hls.autoLevelEnabled, extra };
   } finally { cleanup(); hls.destroy(); }
 }
@@ -102,6 +102,54 @@ test('the pinned element downgrade notification cannot silently pin native Auto'
   assert.equal(result.auto, true);
 });
 
+test('measured recovery expedites native Auto only when playback can safely improve', async () => {
+  const fetcher = globalThis.fetch;
+  globalThis.fetch = async (url) => ({ ok: true, headers: { get: () => null },
+    arrayBuffer: async () => new ArrayBuffer(Number(new URL(url).searchParams.get('bytes'))) });
+  try {
+    for (const mode of ['playing', 'paused', 'seeking', 'short-buffer', 'top', 'capped', 'expensive', 'manual']) {
+      const result = await startup(500_000, { async afterStart(hls, video) {
+        let switches = 0;
+        hls.streamController.nextLevelSwitch = () => switches++;
+        Object.defineProperty(hls, 'currentLevel', { value: mode === 'top' ? 4 : 0 });
+        if (mode === 'paused') video.paused = true;
+        if (mode === 'seeking') video.seeking = true;
+        if (mode === 'short-buffer') video.buffered.end = () => 2;
+        if (mode === 'capped') hls.autoLevelCapping = 0;
+        if (mode === 'expensive') Object.defineProperty(hls.levels[1], 'maxBitrate', { value: 200_000_000 });
+        hls.nextLevel = -1;
+        if (mode === 'manual') hls.nextLevel = 1;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return { switches, manual: hls.manualLevel };
+      } });
+      assert.equal(result.extra.switches, mode === 'playing' ? 1 : 0, mode);
+      assert.equal(result.extra.manual, mode === 'manual' ? 1 : -1, 'recovery must retain Auto or a later manual choice');
+    }
+  } finally { globalThis.fetch = fetcher; }
+});
+
+test('fast recovery can cross from AVC back to Main10 Original without a manual pin or bypassing decoder caps', async () => {
+  const fetcher = globalThis.fetch;
+  globalThis.fetch = async (url) => ({ ok: true, headers: { get: () => null },
+    arrayBuffer: async () => new ArrayBuffer(Number(new URL(url).searchParams.get('bytes'))) });
+  try {
+    for (const cap of [-1, 2]) {
+      const result = await startup(500_000, { mixedCodecs: true, async afterStart(hls) {
+        Object.defineProperty(hls, 'currentLevel', { value: 0 });
+        hls.abrController.lastLoadedFragLevel = 0;
+        hls.streamController.nextLevelSwitch = () => {};
+        hls.autoLevelCapping = cap;
+        hls.nextLevel = -1;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return { next: hls.nextAutoLevel, manual: hls.manualLevel };
+      } });
+      assert.equal(result.extra.manual, -1);
+      if (cap === -1) assert.equal(result.extra.next, 4, 'fast recovery should re-enter supported Original across codec families');
+      else assert.ok(result.extra.next <= cap, 'decoder protection must remain authoritative');
+    }
+  } finally { globalThis.fetch = fetcher; }
+});
+
 test('detaching restores native HLS hooks and cannot undo a later attachment', () => {
   for (const ownDescriptor of [false, true]) {
     const hls = new Hls({ ...adaptiveHlsConfig, enableWorker: false });
@@ -123,4 +171,47 @@ test('detaching restores native HLS hooks and cannot undo a later attachment', (
       assert.deepEqual(Object.getOwnPropertyDescriptor(hls, 'nextLevel'), descriptor);
     } finally { cleanup(); hls.destroy(); }
   }
+});
+
+test('a cold backward seek restarts both buffers without changing paused state or manual quality', () => {
+  const hls = new Hls({ ...adaptiveHlsConfig, enableWorker: false });
+  let ranges = [[0, 20]];
+  const video = Object.assign(new EventTarget(), { currentTime: 12, paused: true, ended: false,
+    buffered: { get length() { return ranges.length; }, start: (i) => ranges[i][0], end: (i) => ranges[i][1] } });
+  const flushes = [], starts = [];
+  hls.on(Hls.Events.BUFFER_FLUSHING, (_, data) => flushes.push(data));
+  hls.startLoad = (position) => starts.push(position);
+  const cleanup = attachAdaptivePlayback(hls, video, 'https://cloud.test/main.m3u8', 0);
+  try {
+    hls.loadLevel = 0;
+    video.currentTime = 4;
+    video.dispatchEvent(new Event('seeking'));
+    assert.equal(flushes.length, 0, 'buffered rewinds keep playable data');
+    ranges = [[8, 20]];
+    video.currentTime = 15;
+    video.dispatchEvent(new Event('timeupdate'));
+    video.currentTime = 25;
+    video.dispatchEvent(new Event('seeking'));
+    assert.equal(flushes.length, 0, 'forward seeks retain the native loading policy');
+    video.currentTime = 0;
+    video.dispatchEvent(new Event('seeking'));
+    assert.deepEqual(flushes, [{ startOffset: 0, endOffset: Infinity, type: null }], 'audio must reset with video');
+    assert.deepEqual(starts, [0]);
+    assert.equal(hls.manualLevel, 0);
+    assert.equal(video.paused, true);
+    video.dispatchEvent(new Event('seeking'));
+    assert.equal(flushes.length, 1, 'one seek cannot reset twice');
+    video.currentTime = 0.1;
+    video.dispatchEvent(new Event('timeupdate'));
+    ranges = [[0.075, 20]];
+    video.currentTime = 0.05;
+    video.dispatchEvent(new Event('seeking'));
+    assert.equal(flushes.length, 2, 'even a small rewind outside the buffer needs coherent tracks');
+    cleanup();
+    video.currentTime = 16;
+    video.dispatchEvent(new Event('timeupdate'));
+    video.currentTime = 0;
+    video.dispatchEvent(new Event('seeking'));
+    assert.equal(flushes.length, 2, 'detaching removes the rewind listener');
+  } finally { cleanup(); hls.destroy(); }
 });

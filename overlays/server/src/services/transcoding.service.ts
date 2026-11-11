@@ -24,7 +24,7 @@ import { copyVideoArgs, sharedAudioArgs, videoSeek, type PlaybackPlan } from 'sr
 
 type Session = {
   playback?: PlaybackPlan;
-  audioSession?: Session;
+  renditions?: Map<number, Session>;
   parent?: Session;
   audioProbe: Promise<AudioStreamInfo | null> | null;
   assetId: string;
@@ -120,7 +120,7 @@ export class TranscodingService extends BaseService {
       this.cleanupInterval = null;
     }
     this.stopTranscode(session);
-    if (session.audioSession) this.stopTranscode(session.audioSession);
+    for (const rendition of session.renditions?.values() ?? []) this.stopTranscode(rendition);
     await this.removeSessionDir(session);
     await this.videoStreamRepository.deleteSession(sessionId);
   }
@@ -134,16 +134,17 @@ export class TranscodingService extends BaseService {
 
     session.lastActivityTime = new Date();
 
-    if (
-      session.playback &&
-      variantIndex === HLS_VARIANTS.length + 1 &&
-      session.audioSession &&
-      segmentIndex !== undefined
-    ) {
-      session.audioSession.lastClientRequestedSegment = segmentIndex;
-    } else if (segmentIndex !== undefined && (!session.playback || variantIndex === session.variantIndex)) {
-      session.lastClientRequestedSegment = segmentIndex;
-      this.applyBackpressure(session);
+    const rendition = session.playback
+      ? variantIndex === undefined
+        ? undefined
+        : session.renditions?.get(variantIndex)
+      : session;
+    if (rendition) {
+      rendition.lastActivityTime = new Date();
+      if (segmentIndex !== undefined) {
+        rendition.lastClientRequestedSegment = segmentIndex;
+        this.applyBackpressure(rendition);
+      }
     }
 
     const remaining = session.expiresAt.getTime() - Date.now();
@@ -160,22 +161,31 @@ export class TranscodingService extends BaseService {
     if (!session) {
       return;
     }
-    if (session.playback && variantIndex === HLS_VARIANTS.length + 1) {
-      if (!session.playback.audio) return;
-      session.audioSession ??= {
-        ...session,
-        parent: session,
-        audioSession: undefined,
-        process: null,
-        starting: false,
-        startGeneration: 0,
-        startSegment: null,
-        variantIndex: null,
-        lastCompletedSegment: null,
-        lastClientRequestedSegment: null,
-        paused: false,
-      };
-      session = session.audioSession;
+    if (session.playback) {
+      if (variantIndex === HLS_VARIANTS.length + 1 && !session.playback.audio) return;
+      // Like Memories, each requested quality owns its producer. A cold ABR
+      // transition must not kill the producer serving another in-flight level.
+      const parent = session;
+      parent.renditions ??= new Map();
+      let rendition = parent.renditions.get(variantIndex);
+      if (!rendition) {
+        rendition = {
+          ...parent,
+          parent,
+          renditions: undefined,
+          process: null,
+          starting: false,
+          startGeneration: 0,
+          startSegment: null,
+          variantIndex,
+          lastCompletedSegment: null,
+          lastClientRequestedSegment: null,
+          paused: false,
+        };
+        parent.renditions.set(variantIndex, rendition);
+      }
+      session = rendition;
+      session.lastActivityTime = new Date();
     }
 
     session.variantIndex ??= variantIndex;
@@ -216,7 +226,11 @@ export class TranscodingService extends BaseService {
   }
 
   private isCurrentStart(session: Session, generation: number) {
-    return this.sessions.get(session.id) === (session.parent ?? session) && session.startGeneration === generation;
+    return (
+      this.sessions.get(session.id) === (session.parent ?? session) &&
+      (!session.parent || session.parent.renditions?.get(session.variantIndex!) === session) &&
+      session.startGeneration === generation
+    );
   }
 
   private applyBackpressure(session: Session) {
@@ -493,6 +507,14 @@ export class TranscodingService extends BaseService {
 
   private removeInactiveSessions() {
     const cutoff = Date.now() - HLS_INACTIVITY_TIMEOUT_MS;
+    for (const session of this.sessions.values()) {
+      for (const [index, rendition] of session.renditions ?? []) {
+        if (rendition.lastActivityTime.getTime() < cutoff) {
+          session.renditions!.delete(index);
+          this.stopTranscode(rendition);
+        }
+      }
+    }
     const inactiveSessions = this.sessions.values().filter((s) => s.lastActivityTime.getTime() < cutoff);
     return Promise.all(
       inactiveSessions.map(async (session) => {

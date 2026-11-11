@@ -12,7 +12,8 @@ the draft direct-file Auto policy with one adaptive HLS playback path.
   cold-start 480p before selecting high quality.
   An affordable supported Original is explicitly seeded for the first load so
   native codec-tier preference cannot select an unnecessary encoded alternative.
-  Subsequent loads remain under native Auto control.
+  A later recovery probe can also re-enter Original for one fragment across
+  codec families. Native Auto and decoder caps remain active throughout.
 - A compatible Original is a video stream-copy rendition in the same master.
   It has the source codec/profile and original dimensions; FFmpeg remuxes video
   packets without decoding, scaling or encoding them. Original does not imply
@@ -25,9 +26,16 @@ the draft direct-file Auto policy with one adaptive HLS playback path.
   qualities. It is normalized/padded through the picture's duration and is not
   restarted when video quality changes. Additional adaptive audio profiles and
   source-AAC copying are not part of this port.
+- Each requested video quality owns its producer, as in Memories. Concurrent
+  quality requests do not cancel each other's unfinished fragments. Idle
+  producers use the existing inactivity timeout; ending the session stops all
+  of them, including starts still waiting for metadata.
 - Manual resolution changes select future fragment loads without clearing the
   playable buffer. Returning to Auto releases the manual pin. A visible change
   can take up to the retained buffer; it is not promised to be instant.
+  After a successful recovery probe, native Auto can replace future low-quality
+  fragments while retaining the playing fragment. This requires at least three
+  buffered seconds and enough measured headroom for a higher rendition.
 - Quality entries show their advertised HLS bandwidth beside the resolution
   (for example, `1080p · 4.2 Mbps`). This is nominal stream bandwidth, including
   shared audio where advertised, rather than a live transfer-speed measurement.
@@ -37,6 +45,10 @@ the draft direct-file Auto policy with one adaptive HLS playback path.
   burst 18 seconds. The pinned Immich FFmpeg does not support Memories' explicit
   3.5x catch-up ceiling, so that flag is deliberately omitted. Pacing is not a
   throughput guarantee; the FFmpeg/runtime pin remains unchanged.
+  An unbuffered backward seek or loop resets retained audio and video together;
+  buffered seeks preserve their existing data. This prevents earlier AAC from
+  splicing against retained future samples and mixing old Original fragments
+  into a new manual quality selection.
 - Completed transfer timings are separated from pre-first-byte producer waits.
   Two agreeing recent samples plus healthy buffer can correct an underestimated
   bandwidth estimate. Network/online/foreground changes and returning to Auto
@@ -46,6 +58,8 @@ the draft direct-file Auto policy with one adaptive HLS playback path.
   from silently turning Auto into a manual quality pin.
   Recoverable errors are logged without serializing circular loader data, and
   detaching the player restores both temporary integration hooks.
+- The settings menu stays above the controls' stacking context, so pointer
+  clicks reach resolution entries rather than the control-bar overlay.
 - Original failure disables copy for that asset session and resumes encoded HLS
   at the remembered time and pause state. Explicit **Play original** remains a
   direct-file override with its existing one-way HLS fallback.
@@ -121,6 +135,13 @@ Mount it read-only into a disposable candidate-image container, with a separate
 scratch directory and the same MPP/RGA/DRM/DMA heap/Mali/OpenCL mappings as the
 existing hardware verification setup. It imports the candidate's compiled
 server modules, not a JavaScript bind mount over the running service.
+
+## Diagnostics
+
+For playback diagnostics, add `playbackDebug=1` to the viewer page's query.
+The media element then exposes bandwidth, current level, decoder cap and
+dropped/total frame counters as `data-playback-*` attributes. These opt-in
+values omit asset URLs and authentication data and are removed on cleanup.
 
 ## Attribution
 

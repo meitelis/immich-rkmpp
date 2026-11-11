@@ -255,16 +255,22 @@ export function attachAdaptivePlayback(
       probing = false;
     }
   };
-  // Media Chrome's nextLevel assignment used to be redirected to currentLevel,
-  // which discards playable buffers. Pin future loads; -1 releases native Auto.
+  // Native nextLevel keeps the playing fragment and schedules replacement of
+  // future data. loadLevel alone waits for the entire buffered tail to play.
   Object.defineProperty(hls, 'nextLevel', {
     configurable: true,
     get: () => hls.manualLevel,
     set: (level: number) => {
       if (automaticNotification) return;
       samples = [];
-      hls.loadLevel = level;
-      if (level === -1) void refresh(true);
+      if (level === -1) {
+        hls.loadLevel = -1;
+        void refresh(true);
+      } else if (smoothSwitch) {
+        smoothSwitch.call(hls, level);
+      } else {
+        hls.loadLevel = level;
+      }
     },
   });
   hls.loadLevel = -1;

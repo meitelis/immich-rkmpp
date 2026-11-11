@@ -30,9 +30,11 @@ the draft direct-file Auto policy with one adaptive HLS playback path.
   quality requests do not cancel each other's unfinished fragments. Idle
   producers use the existing inactivity timeout; ending the session stops all
   of them, including starts still waiting for metadata.
-- Manual resolution changes select future fragment loads without clearing the
-  playable buffer. Returning to Auto releases the manual pin. A visible change
-  can take up to the retained buffer; it is not promised to be instant.
+- Manual resolution changes use native hls.js scheduled switching: keep the
+  playing fragment and replace future data at a safe boundary instead of
+  waiting for the entire buffered tail. Cold production/transfer time and
+  segment boundaries still affect the visible delay. Returning to Auto
+  releases the manual pin.
   After a successful recovery probe, native Auto can replace future low-quality
   fragments while retaining the playing fragment. This requires at least three
   buffered seconds and enough measured headroom for a higher rendition.
@@ -147,7 +149,7 @@ values omit asset URLs and authentication data and are removed on cleanup.
 
 Adapted from memories-rkmpp commit
 `d6a9471dfbd3dd721bd67698c062ddcc773e232c`: native Auto/probe/buffer policy,
-non-flushing selection, shared-audio design, source presentation grids and
+buffer-preserving selection, shared-audio design, source presentation grids and
 hardware input pacing. Immich authentication, session ownership, internal
 worker events and cleanup remain the integration boundary. License notices
 are in [NOTICE](../NOTICE) and [LICENSES](../LICENSES/Apache-2.0.txt).

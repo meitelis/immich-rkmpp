@@ -102,6 +102,23 @@ test('the pinned element downgrade notification cannot silently pin native Auto'
   assert.equal(result.auto, true);
 });
 
+test('manual choices use native scheduled switching without an immediate flush or playhead change', async () => {
+  for (const paused of [false, true]) {
+    const result = await startup(90_000_000, { afterStart(hls, video) {
+      let scheduled = 0, immediate = 0;
+      hls.streamController.nextLevelSwitch = () => scheduled++;
+      hls.streamController.immediateLevelSwitch = () => immediate++;
+      video.currentTime = 12.25;
+      video.paused = paused;
+      hls.nextLevel = 2;
+      assert.equal(hls.manualLevel, 2);
+      hls.nextLevel = 4;
+      return { scheduled, immediate, manual: hls.manualLevel, time: video.currentTime, paused: video.paused };
+    } });
+    assert.deepEqual(result.extra, { scheduled: 2, immediate: 0, manual: 4, time: 12.25, paused });
+  }
+});
+
 test('measured recovery expedites native Auto only when playback can safely improve', async () => {
   const fetcher = globalThis.fetch;
   globalThis.fetch = async (url) => ({ ok: true, headers: { get: () => null },
@@ -119,8 +136,9 @@ test('measured recovery expedites native Auto only when playback can safely impr
         if (mode === 'expensive') Object.defineProperty(hls.levels[1], 'maxBitrate', { value: 200_000_000 });
         hls.nextLevel = -1;
         if (mode === 'manual') hls.nextLevel = 1;
+        const manualSwitches = switches;
         await new Promise((resolve) => setTimeout(resolve, 0));
-        return { switches, manual: hls.manualLevel };
+        return { switches: switches - manualSwitches, manual: hls.manualLevel };
       } });
       assert.equal(result.extra.switches, mode === 'playing' ? 1 : 0, mode);
       assert.equal(result.extra.manual, mode === 'manual' ? 1 : -1, 'recovery must retain Auto or a later manual choice');

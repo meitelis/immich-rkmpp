@@ -8,7 +8,8 @@ It supersedes the separate draft direct-file Auto approach in PR #3.
 
 Implemented: native hls.js Auto seeded by bounded throughput measurements;
 source-video stream-copy Original; shared source presentation grids; independent
-AAC audio that survives video-quality changes; non-flushing manual selection;
+AAC audio that survives video-quality changes; scheduled manual switching that
+retains the playing fragment;
 bounded buffers; RKMPP input pacing; copy/codec failure recovery; internal
 cross-API-worker plan retrieval and existing session cleanup.
 

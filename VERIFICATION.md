@@ -1,3 +1,34 @@
+# Faster manual selection — 11 November 2026
+
+Auto retains its 18-second forward-buffer target and native throughput/buffer
+adaptation. Manual choices now use hls.js scheduled switching, retaining the
+playing fragment while replacing future data at a safe boundary.
+
+With the generated Main10/open-GOP clip, the previous manual path took 13.7
+seconds to show 1080p. Reducing only the buffer target to six seconds still
+took 9.9 seconds because whole segments extend the retained buffer. Native
+scheduled switching took 5.7 seconds with the full 18-second target retained.
+A six-second cold-init delay switched in 6.0 seconds. These runs had no
+mid-clip stalls, HLS errors or buffer gaps; eviction still requires fresh data
+at a cold loop. Visible delay depends on keyframe boundaries and delivery time.
+
+Candidate `local/immich-server:rkmpp-3.4.0-r4-memories-fix5` built on the
+ROCK 5B+ with 121 source regressions, browser TypeScript/Svelte checks and
+three runtime FFmpeg fragment cases passing. The unchanged server build
+retains its 98 passing upstream tests. Helper SHA-256:
+`116a1e7ec1ea939ff2ab0f564c7ef8cf4c54d697193a0bb25c9fe707a9c925ab`.
+
+After deployment through Portainer and a full browser reload, the affected
+Main10 clip changed from Original to 1080p in 3.8 seconds and from 1080p
+back to 4K Original in 7.4 seconds. Both transitions kept advancing playback
+with readyState 4, a contiguous playable buffer and no additional dropped
+frames during the measured interval. Normal pointer selection worked. Auto
+returned to Original and remained at 4K; replay retained working buffers.
+There were no HLS/player errors. This does not promise a fixed switch time:
+segment boundaries, cold production and download time still apply.
+
+---
+
 # Playback buffer and recovery follow-up — 11 November 2026
 
 Normal pointer clicks reproduced the inactive quality control: the later

@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/immich-app/immich.git",
+  "version": "3.4.0",
+  "tag": "v3.4.0",
+  "commit": "0715bcf8dab4b91118d6184479e2be2767ef8294",
+  "runtimeImage": "ghcr.io/immich-app/immich-server:v3.4.0@sha256:7b7b575029168bfb9eb901d868ce7dbfda0d7818e78aaace29b7b8a08cd4e7d5"
+}

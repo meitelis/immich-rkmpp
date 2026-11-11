@@ -1,0 +1,9 @@
+.git
+.env*
+work
+backups
+node_modules
+**/node_modules
+*.log
+*.private.json
+*.tar*

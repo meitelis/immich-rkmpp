@@ -1,0 +1,17 @@
+Immich RKMPP customization for Immich v3.4.0.
+
+The overlays are derived from Immich, Copyright the Immich contributors,
+licensed under the GNU Affero General Public License version 3.
+Upstream source: https://github.com/immich-app/immich
+Source commit: 0715bcf8dab4b91118d6184479e2be2767ef8294
+
+The existing RKMPP customization was reviewed and retained where appropriate.
+This project is independent of the official Immich project.
+
+Playback strategy and timeline logic adapted from meitelis/memories-rkmpp:
+https://github.com/meitelis/memories-rkmpp/tree/d6a9471dfbd3dd721bd67698c062ddcc773e232c
+The go-vod SourceSegments/KeyframeGrid logic is Apache-2.0 licensed; its
+license is retained in LICENSES/Apache-2.0.txt. The Memories browser helper
+is AGPL-3.0 licensed. Retain the upstream notices when redistributing.
+Original go-vod upstream: https://github.com/pulsejet/memories (Memories
+v11.0.2 / e156f850ec5514433f1cfac9d4f1dbd461500c8d, go-vod 0.7.0).

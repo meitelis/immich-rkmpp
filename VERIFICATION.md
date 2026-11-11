@@ -1,0 +1,195 @@
+# Faster manual selection — 11 November 2026
+
+Auto retains its 18-second forward-buffer target and native throughput/buffer
+adaptation. Manual choices now use hls.js scheduled switching, retaining the
+playing fragment while replacing future data at a safe boundary.
+
+With the generated Main10/open-GOP clip, the previous manual path took 13.7
+seconds to show 1080p. Reducing only the buffer target to six seconds still
+took 9.9 seconds because whole segments extend the retained buffer. Native
+scheduled switching took 5.7 seconds with the full 18-second target retained.
+A six-second cold-init delay switched in 6.0 seconds. These runs had no
+mid-clip stalls, HLS errors or buffer gaps; eviction still requires fresh data
+at a cold loop. Visible delay depends on keyframe boundaries and delivery time.
+
+Candidate `local/immich-server:rkmpp-3.4.0-r4-memories-fix5` built on the
+ROCK 5B+ with 121 source regressions, browser TypeScript/Svelte checks and
+three runtime FFmpeg fragment cases passing. The unchanged server build
+retains its 98 passing upstream tests. Helper SHA-256:
+`116a1e7ec1ea939ff2ab0f564c7ef8cf4c54d697193a0bb25c9fe707a9c925ab`.
+
+After deployment through Portainer and a full browser reload, the affected
+Main10 clip changed from Original to 1080p in 3.8 seconds and from 1080p
+back to 4K Original in 7.4 seconds. Both transitions kept advancing playback
+with readyState 4, a contiguous playable buffer and no additional dropped
+frames during the measured interval. Normal pointer selection worked. Auto
+returned to Original and remained at 4K; replay retained working buffers.
+There were no HLS/player errors. This does not promise a fixed switch time:
+segment boundaries, cold production and download time still apply.
+
+---
+
+# Playback buffer and recovery follow-up — 11 November 2026
+
+Normal pointer clicks reproduced the inactive quality control: the later
+control-bar stacking context covered the settings menu. Raising that menu
+fixes both opening the resolution list and selecting a rendition by mouse.
+DOM/keyboard activation had bypassed the obstruction, so pointer testing is
+required for this regression. The corrected layout passed isolated and live
+mouse-click checks.
+
+Cold Auto transitions exposed another difference from Memories: one quality
+could cancel another's pending requests and encoder startup. Requested
+Memories renditions now own independent producers under the same authenticated
+session. Existing idle cleanup releases unused producers; session end and
+late-start ownership checks stop all remaining work. Legacy HLS retains its
+single-producer policy. Concurrency, idle sweeping and teardown regressions pass.
+
+Unbuffered backward seeks reset retained audio and video together, avoiding
+AAC splice holes and old Original fragments surviving a manual selection.
+Buffered seeks preserve their data and pause/manual state. A generated Main10
+open-GOP fixture reproduced the earlier gap on hls.js 1.7.3 and 1.7.4; upgrading
+alone did not fix it, so the upstream dependency remains pinned.
+
+Bounded probes continue after a cold first sample. Recovery can replace future
+low-quality data while retaining the playing fragment. A supported affordable
+Original can re-enter Auto for one fragment across codec families; decoder
+caps and subsequent native downshifts remain authoritative. Generated playback
+returned from 480p to Original with Auto enabled, no mid-clip errors or buffer
+gaps, and zero dropped frames. Cold loop startup can still need evicted data.
+
+Candidate `local/immich-server:rkmpp-3.4.0-r4-memories-fix4` built on the
+ROCK 5B+ and passed 120 source regressions, 98 upstream server tests, browser
+TypeScript/Svelte checks and three runtime FFmpeg fragment cases. Helper SHA-256:
+`689c9ab699dc1195418ea8065ae2fa9c11777ff2a2e7ec7c39c1830cb0a740f1`.
+Live checks on the actual 4K/60 Main10 clip passed: mouse-operated resolution
+selection, repeated playback, and 1080p -> Auto recovery through 1440p to
+3840x2160 Original with Auto still enabled. No buffer gaps, HLS errors or
+additional dropped frames occurred during the measured recovery. Navigating
+through two other portrait videos and back restarted the clip at 4K Original
+without errors. These checks do not establish every browser, media type,
+network condition, audible-continuity target or maximum concurrent viewer count.
+
+---
+
+# Immich 3.4.0 port — 10 November 2026
+
+Candidate: `local/immich-server:rkmpp-3.4.0-r4-memories`, built from the
+official 3.4.0 source and matching pinned runtime. Upstream event, image,
+public-config, import and FaceEditor changes are preserved. The quality menu
+adds advertised bitrate labels and always includes eligible Original in Auto.
+
+Local validation: 113 source/controller regressions, three real H.264/HEVC/AAC
+fragment cases, server/web TypeScript, Svelte diagnostics and both production
+builds pass. The actual Media Chrome 4.19.3 menu renders the new resolution,
+Original and bitrate labels without console errors in an isolated browser
+preview. Targeted upstream tests pass 95/98 on Windows; the remaining three
+compare Linux paths. The ARM64 CI result on the PR is authoritative.
+
+Live inspection of 3.3.5 found a Main10 clip stopping with about four seconds
+buffered, after aborted requests and a fatal hls.js internal exception. An
+isolated browser reproduction exposed circular Fragment/loader/context data:
+serializing the entire error event throws inside the viewer's error listener,
+which hls.js converts into a fatal internal exception and stops loading. The
+viewer now logs scalar event fields and the original Error safely. A regression
+checks circular abort data against the actual component handler.
+
+The pinned hls.js startup controller also preferred the AVC codec tier over an
+affordable supported Main10 Original. Measured fast startup now seeds Original
+for the first load only. Native Auto remains enabled; real controller tests
+verify slow-transfer downshifts for both AVC and mixed-codec masters.
+
+Browser checks use the actual viewer handler, adaptive helper and pinned HLS
+element with generated Main10/open-GOP video, compiled video-fragment commands
+and shared AAC. A 45-second encoded run changed 480p -> 1080p -> Auto, presented
+all three selected levels, and reached EOF without a waiting event or error.
+A deliberately slowed Original transfer caused a native downshift into encoded
+video and reached EOF. Delayed production recovered without a fatal exception;
+a producer delayed beyond the available buffer can still cause an underrun.
+These synthetic checks do not establish audible continuity or physical RKMPP
+throughput. No private media is included in the fixtures or repository.
+
+Cleanup now restores both temporary HLS hooks exactly and is idempotent; an old
+cleanup cannot detach a subsequent attachment. The menu formatter restores its
+native property, and unused metadata and duplicate pending state were removed.
+Casting bypasses local browser capability/probe decisions and retains the native
+authenticated HLS path; a regression checks the URL and skipped preparation.
+The 3.4.0 candidate still needs on-board and live playback acceptance.
+Upgrading from 3.3.5 runs upstream database migrations: back up the database and
+stack before deployment; replacing the image alone does not undo migrations.
+
+---
+
+# Memories strategy port on 3.3.5 — 10 November 2026
+
+Development candidate: rkmpp-3.3.5-r4-memories. This changes the server and
+browser pipeline; the historical R2/R3 results below are not validation of it.
+
+Local Windows checks:
+
+- Focused source/policy/lifecycle/controller regressions pass, including the
+  actual hls.js 1.7.3 startup controller and subsequent native downshifts.
+  There are 107 passing source checks; three real-FFmpeg cases are opt-in and
+  were also run separately with the binaries and compiled media module below.
+- Real FFmpeg H.264 B-frame and HEVC open-GOP remuxes pass full/cold fragment
+  decode, exact raw MP4 presentation ranges and original video payload hashes.
+- Real shared AAC passes padding through a short source's tail and cold seeks.
+- Server TypeScript, Svelte diagnostics and browser TypeScript pass.
+- The server production build passes.
+- The web production build passes (existing upstream chunk/wasm warnings).
+- The upstream targeted server suite passes 95/98 locally; three expected
+  Linux-path command snapshots differ only by Windows path separators. The
+  ARM64/Linux CI run is authoritative for those three snapshots.
+
+GitHub Actions builds the pinned ARM64 server and browser image, runs the full
+targeted upstream server suites and real fragment checks with the candidate's
+FFmpeg. Its exact revision/result must be checked on the PR.
+
+The first ARM64 candidate built successfully and passed all 98 targeted server
+tests. Runtime fragment checks caught the bundled FFmpeg's missing
+readrate_catchup option. The port uses its supported readrate 1 / initial burst
+18 options and does not change the pinned FFmpeg or runtime dependencies.
+
+The user ran the SDR hardware matrix on commit 85d2f745: 34/34 passed,
+including paced/source-grid/cold-seek cases. Mali/HDR was not exercised.
+The user then deployed that candidate; live browser inspection found an empty
+media source and `Failed to construct 'URL': Invalid URL` before HLS startup.
+The new preparation helper incorrectly required an absolute master URL, while
+Immich's production URL builder normally returns `/api/assets/...`.
+
+The fix resolves both preparation and probe/metadata endpoint URLs against the
+browser location. Three regressions use the production URL-builder functions
+with root-relative, subpath and absolute API bases; the two relative cases fail
+before the fix and pass after it. Authentication and codec query parameters
+are checked. No server, FFmpeg or hardware behavior changes in this fix.
+
+Still required: repeat actual-browser startup after deploying the URL fix, then
+fast/slow/network-change/quality-switch/seek/pause/EOF acceptance, with audible
+continuity and A/V drift checks. The fix has not been deployed by the agent.
+See [the deployment gate](docs/MEMORIES_PLAYBACK.md).
+
+---
+
+# Immich RKMPP verification
+
+Review date: 4 November 2026. Target: Immich 3.3.5 on RK3588, with the source and runtime pinned in `upstream.json`.
+
+The original service used native Immich 3.3.5 real-time HLS plus a mounted RKMPP media module. The package now builds its server and browser overlays into one runtime image, retaining native session ownership, prewarming, strict GOPs, buffering, backpressure and idle cleanup.
+
+## Source regressions
+
+78 focused Node tests pass. They cover encoder-start concurrency and cancellation, codec-filtered playlists and authentication, FFmpeg-compatible dimensions and level selection, HDR no-upscale behavior, bounded browser capability caching and HEVC-to-H.264 recovery. Follow-up coverage includes conservative AAC-copy decisions, one audio probe per session, cold-seek packet trimming, explicit Original playback with adaptive fallback, direct-monitor cleanup, quality-switch hints and controller rebinding. Paused recovery is tested against delayed autoplay, including native HLS. Negative controls reproduce the lifecycle, browser and copied-audio regressions against prior source.
+
+## Hardware checks
+
+The built R2 image passed 34 synthetic scenarios on the actual ROCK 5B+: five resolutions from 480p to 2160p in HEVC and H.264, cold seeks at 1080p and 2160p, software decode with MPP encode, rotation, Mali/CPU HDR conversion, full-size 10-bit SDR, a source below the minimum ladder size, copied mono/stereo AAC and PCM/FLAC conversion. Each video fragment was independently decoded; dimensions, frame counts, keyframes, codec levels and timelines were checked. Copied audio retained source payload hashes and timestamps; audio was strictly decoded and checked for boundary alignment and continuity.
+
+Negative hardware testing caught copied AAC preroll at cold seeks: six scenarios began audio at zero while video began at two seconds. Dropping only copied packets before the exact shared GOP boundary corrected all six failures. The corrected isolated run passed 26/26, followed by the complete 34/34 compiled-image matrix without a replacement media-module bind mount. Initial playback preserves source priming; offline conversion is unchanged.
+
+## Remaining release checks
+
+The complete R2 build passed server TypeScript, 98 focused upstream tests, Svelte, browser TypeScript and both production builds. R2 was deployed with explicit approval and is healthy; the effective configuration changed only the image. Media volumes, the anonymous data volume and hardware devices were preserved. Live checks reached actual 3840×2160 with RKMPP decode/encode, RGA and copied AAC. Selecting Original retained a paused position and released the encoder.
+
+Browser checks then exposed a media-chrome control-store race after replacing HLS with a native video: the video loaded but Play and the clock disconnected. R3 adds guarded rebinding after the DOM mutation batch. Its two source regressions pass; the full R3 browser build and repeated live control checks are pending. R3 has no backend or FFmpeg changes; the R2 hardware matrix applies to that backend.
+
+These are correctness checks and synthetic measurements, not a before/after throughput benchmark. They do not establish every HDR profile, client/browser, network condition or a maximum viewer count. No reliable VPU utilization percentage is available on this host. Private media, credentials, account identifiers and deployment configuration are excluded from this repository.

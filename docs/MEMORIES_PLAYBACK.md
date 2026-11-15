@@ -1,7 +1,7 @@
 # Memories playback port
 
-Development image: `local/immich-server:rkmpp-3.4.0-r4-memories`.
-This is a coordinated server + web change on pinned Immich 3.4.0. It replaces
+Development image: `local/immich-server:rkmpp-3.4.1-r4-memories`.
+This is a coordinated server + web change on pinned Immich 3.4.1. It replaces
 the draft direct-file Auto policy with one adaptive HLS playback path.
 
 ## Playback behavior
@@ -107,8 +107,8 @@ Before deploying to the main server:
 4. When upgrading from 3.3.5, back up the database and save the Portainer stack
    before deploying. Immich 3.4 includes database migrations; reverting the
    server image alone is not a complete downgrade. Keep the machine-learning
-   image on the matching 3.4.0 release/flavor. The deployment/rollback scripts
-   are for same-version 3.4.0 image replacements only.
+   image on the matching 3.4.1 release/flavor. The deployment/rollback scripts
+   are for same-version 3.4.1 image replacements only.
 
 Build from this development branch, not the README-only default branch:
 
@@ -128,7 +128,7 @@ docker run --rm --entrypoint node \
   -e IMMICH_FFMPEG_BIN=ffmpeg -e IMMICH_FFPROBE_BIN=ffprobe \
   -e IMMICH_PLAYBACK_SCRATCH=/scratch \
   -e IMMICH_COMPILED_MEDIA=/usr/src/app/server/dist/utils/media.js \
-  local/immich-server:rkmpp-3.4.0-r4-memories \
+  local/immich-server:rkmpp-3.4.1-r4-memories \
   --test tests/playback-fragments.test.mjs
 ```
 

@@ -33,7 +33,7 @@ An existing destination is refused to protect other work. Retain the resulting i
 
 Start from the existing, working Immich 3.4.1 Compose stack. Keep its database, Redis, media and plugin volumes, machine-learning service, network, environment and application settings. Keep the normal Immich database and media backups as well.
 
-Upgrading from 3.3.5 or 3.4.0 to 3.4.1 may run database migrations; back up the database before changing the image. Upgrading from 3.3.5 is a version upgrade with database migrations. Back up the database and export the Portainer stack first; retain the matching 3.4.1 machine-learning image/flavor. Image-only rollback to 3.3.5 is not a complete database downgrade. The helper scripts below only replace images within 3.4.1.
+When upgrading from 3.3.5 or 3.4.0 to 3.4.1, first back up the database and export the Portainer stack; database migrations may occur. Keep the machine-learning image/flavor compatible with the server. An older image alone cannot undo database schema changes. The helper scripts below support only same-version 3.4.1 image replacements.
 
 Deployment and rollback require Docker Compose and Python 3 only; Node.js, npm and pnpm are not required on the Radxa.
 

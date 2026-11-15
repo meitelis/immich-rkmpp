@@ -1,10 +1,12 @@
 # Immich RKMPP
 
-A pinned, rebuildable RK3588 customization for **Immich 3.4.0**, with hardware HEVC/H.265 and H.264 real-time playback. The custom server and browser are built into one Immich runtime image. No compiled JavaScript bind mount is needed.
+A pinned, rebuildable RK3588 customization for **Immich 3.4.1**, with hardware HEVC/H.265 and H.264 real-time playback. The custom server and browser are built into one Immich runtime image. No compiled JavaScript bind mount is needed.
 
-Immich 3.4.0 already includes RKMPP and real-time HLS. This project preserves that engine and its buffering, prewarming and idle management. The overlays fix encoder startup races, rendition sizing and HDR surface conversion, add browser capability checks and a one-time H.264 retry, preserve verified compatible AAC, and support explicit Original playback with adaptive fallback.
+Immich 3.4.1 already includes RKMPP and real-time HLS. This project preserves that engine and its buffering, prewarming and idle management. The overlays fix encoder startup races, rendition sizing and HDR surface conversion, add browser capability checks and a one-time H.264 retry, preserve verified compatible AAC, and support explicit Original playback with adaptive fallback.
 
 The exact upstream source commit and official runtime digest are in [upstream.json](upstream.json). Source preparation verifies both pins. This package supports that version only; applying its files to another Immich version is unsupported. It is independent of the official Immich project and licensed under AGPL-3.0.
+
+Validation evidence for the 3.4.1 candidate on the ROCK 5B+ is recorded in [release qualification](docs/RELEASE_3_4_1.md). Candidate preparation and hardware testing do not authorize unattended production deployment.
 
 ## Build
 
@@ -16,12 +18,12 @@ cd immich-rkmpp
 sh scripts/build.sh
 ```
 
-The build creates `local/immich-server:rkmpp-3.4.0-r4-memories`. It fetches a fresh pinned upstream checkout under `work/`, applies the overlays, checks the server and browser, and compiles both. The runtime reuses the matching official image's dependencies, FFmpeg, CLI and core plugins. It does not rebuild unrelated Immich CLI or plugin binaries. A container used for source preparation is removed when it finishes; it adds no ongoing runtime service.
+The build creates `local/immich-server:rkmpp-3.4.1-r4-memories`. It fetches a fresh pinned upstream checkout under `work/`, applies the overlays, checks the server and browser, and compiles both. The runtime reuses the matching official image's dependencies, FFmpeg, CLI and core plugins. It does not rebuild unrelated Immich CLI or plugin binaries. A container used for source preparation is removed when it finishes; it adds no ongoing runtime service.
 
 For another tag or source destination:
 
 ```sh
-sh scripts/build.sh --image local/immich-server:rkmpp-3.4.0-r4-memories \
+sh scripts/build.sh --image local/immich-server:rkmpp-3.4.1-r4-memories \
   --source-dir /path/to/new/immich-source
 ```
 
@@ -29,14 +31,14 @@ An existing destination is refused to protect other work. Retain the resulting i
 
 ## Deploy into an existing Immich stack
 
-Start from the existing, working Immich 3.4.0 Compose stack. Keep its database, Redis, media and plugin volumes, machine-learning service, network, environment and application settings. Keep the normal Immich database and media backups as well.
+Start from the existing, working Immich 3.4.1 Compose stack. Keep its database, Redis, media and plugin volumes, machine-learning service, network, environment and application settings. Keep the normal Immich database and media backups as well.
 
-Upgrading from 3.3.5 is a version upgrade with database migrations. Back up the database and export the Portainer stack first; retain the matching 3.4.0 machine-learning image/flavor. Image-only rollback to 3.3.5 is not a complete database downgrade. The helper scripts below only replace images within 3.4.0.
+Upgrading from 3.3.5 or 3.4.0 to 3.4.1 may run database migrations; back up the database before changing the image. Upgrading from 3.3.5 is a version upgrade with database migrations. Back up the database and export the Portainer stack first; retain the matching 3.4.1 machine-learning image/flavor. Image-only rollback to 3.3.5 is not a complete database downgrade. The helper scripts below only replace images within 3.4.1.
 
 Deployment and rollback require Docker Compose and Python 3 only; Node.js, npm and pnpm are not required on the Radxa.
 
 1. Save a copy of the Compose file **before editing it**, such as `docker-compose.yml.before-rkmpp`.
-2. Change only the `immich-server` image to `local/immich-server:rkmpp-3.4.0-r4-memories` and set `pull_policy: never` for a locally built image.
+2. Change only the `immich-server` image to `local/immich-server:rkmpp-3.4.1-r4-memories` and set `pull_policy: never` for a locally built image.
 3. Remove any old bind mount that replaces `/usr/src/app/server/dist/utils/media.js`, another compiled server file, or `/build/www`. Such a mount would hide the code built into this image. The deployment script refuses these mounts.
 4. Retain the RK3588 devices and matching Mali/OpenCL host setup. [compose.override.example.yml](compose.override.example.yml) shows the relevant device and library mappings, but is not a replacement for a complete Immich stack. Compose merges volume entries, so adding this example alone does not remove an old JavaScript mount.
 5. Deploy the server using the **existing Compose project name**:

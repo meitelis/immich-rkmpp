@@ -13,7 +13,7 @@ Validation evidence for the 3.4.1 candidate on the ROCK 5B+ is recorded in [rele
 Use an ARM64 Linux build host with Docker, Git and Python 3. Host Node.js is optional: if Node.js 24 or newer is available, source preparation uses it; otherwise one disposable container from the pinned official build image supplies Node and Git. No host npm or pnpm installation is needed. The RK3588 device interfaces are needed for hardware verification and playback, not for compiling the image. Docker BuildKit is optional.
 
 ```sh
-git clone --branch codex/memories-playback-3.4 https://github.com/meitelis/immich-rkmpp.git
+git clone https://github.com/meitelis/immich-rkmpp.git
 cd immich-rkmpp
 sh scripts/build.sh
 ```
@@ -78,10 +78,10 @@ the source video without re-encoding it. Source-grid encodes use hardware input
 pacing instead of SIGSTOP/CONT. Explicit Play original remains available.
 
 See [the playback port and deployment gate](docs/MEMORIES_PLAYBACK.md) for
-eligibility, fallback, behavior and test commands. The new image is a development
-candidate. ARM64 image checks, board hardware tests and real-browser acceptance
-must pass before deploying it to the main server. Earlier R2/R3 results do not
-validate this new server/browser pipeline.
+eligibility, fallback, behavior and test commands. The 3.4.1 release has passed its ARM64 CI and a ROCK 5B+ hardware validation matrix;
+see [the release evidence](docs/RELEASE_3_4_1.md). For future releases, the rebuilt
+candidate must pass the same gates. Client playback acceptance and backup/rollback
+remain necessary before deploying a future version.
 
 ## Playback configuration
 

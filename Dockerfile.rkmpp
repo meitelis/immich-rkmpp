@@ -33,7 +33,7 @@ RUN pnpm --filter immich-web install --frozen-lockfile
 COPY i18n i18n/
 COPY open-api open-api/
 COPY web web/
-ARG IMMICH_BUILD=rkmpp-3.4.1-r4-memories
+ARG IMMICH_BUILD=rkmpp-3.4.2-r4-memories
 ENV IMMICH_BUILD=${IMMICH_BUILD}
 RUN pnpm --filter immich-web exec svelte-kit sync && \
     pnpm --filter immich-web check:svelte && \
@@ -41,18 +41,18 @@ RUN pnpm --filter immich-web exec svelte-kit sync && \
     pnpm --filter immich-web build
 
 # Reuse matching runtime dependencies, FFmpeg, CLI and core plugins.
-FROM ghcr.io/immich-app/immich-server:v3.4.1@sha256:7c489add298fc2f92cda4c777de6462aa206877e04087b815f62c7664af0b53b AS rkmpp
+FROM ghcr.io/immich-app/immich-server:v3.4.2@sha256:fc880c1bf665b4aab1e74c15e56ab871225989cd546536e6b77e771869af06bd AS rkmpp
 COPY --from=server /usr/src/app/server/dist /usr/src/app/server/dist
 COPY --from=web /usr/src/app/web/build /build/www
 COPY LICENSE /licenses/immich-rkmpp/LICENSE
 COPY RKMPP_NOTICE /licenses/immich-rkmpp/NOTICE
 COPY RKMPP_LICENSES /licenses/immich-rkmpp/third-party
 ARG RKMPP_REVISION=local
-ARG IMMICH_BUILD=rkmpp-3.4.1-r4-memories
+ARG IMMICH_BUILD=rkmpp-3.4.2-r4-memories
 ENV IMMICH_BUILD=${IMMICH_BUILD}
 LABEL org.opencontainers.image.title="Immich RKMPP" \
       org.opencontainers.image.version="3.4.1-rkmpp-r4-memories" \
       org.opencontainers.image.source="https://github.com/meitelis/immich-rkmpp" \
       org.opencontainers.image.revision="${RKMPP_REVISION}" \
       cc.immich-rkmpp.upstream-version="3.4.1" \
-      cc.immich-rkmpp.upstream-revision="22b95194c80a2f2e6201093916b6c8c3d6d271dd"
+      cc.immich-rkmpp.upstream-revision="b6b4b80df113656bfa4872cab31c7319e89438a9"
